@@ -7,15 +7,16 @@ logger = logging.getLogger("x_summarizer")
 
 
 class AISummarizer:
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-flash-lite-latest"):
         self.api_key = (api_key or os.environ.get("GEMINI_API_KEY", "")).strip()
+        self.model = (os.environ.get("GEMINI_MODEL") or model).strip()
 
     def update_api_key(self, api_key: str):
         self.api_key = api_key.strip()
 
     def summarize(self, title: str, content: str, category: str = "") -> Optional[str]:
         """
-        Summarize news article or ArXiv paper into a concise 3-bullet insight using Gemini Flash.
+        Summarize news article or ArXiv paper into a concise 3-bullet insight using Gemini Flash-Lite.
         Returns formatted string for Telegram or None if fallback needed.
         """
         if not self.api_key or self.api_key.startswith("YOUR_"):
@@ -40,7 +41,6 @@ class AISummarizer:
             "• [영향 및 시사점] (시장/산업/정책에 미칠 파급효과 1문장)\n"
         )
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.api_key}"
         payload = {
             "contents": [
                 {
@@ -54,20 +54,33 @@ class AISummarizer:
         }
         headers = {"Content-Type": "application/json"}
 
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=12)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts:
-                        summary_text = parts[0].get("text", "").strip()
-                        return summary_text
-            else:
-                logger.warning(f"Gemini API returned status {resp.status_code}: {resp.text[:200]}")
-        except Exception as e:
-            logger.error(f"Gemini summarization failed: {e}")
+        # Try primary model (gemini-flash-lite-latest), then fallback models if 404
+        candidate_models = [self.model]
+        for fallback in ["gemini-2.0-flash-lite", "gemini-1.5-flash"]:
+            if fallback not in candidate_models:
+                candidate_models.append(fallback)
+
+        for mod in candidate_models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={self.api_key}"
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=12)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            summary_text = parts[0].get("text", "").strip()
+                            return summary_text
+                elif resp.status_code == 404:
+                    logger.warning(f"Model '{mod}' returned 404, attempting fallback...")
+                    continue
+                else:
+                    logger.warning(f"Gemini API ({mod}) returned status {resp.status_code}: {resp.text[:200]}")
+                    break
+            except Exception as e:
+                logger.error(f"Gemini summarization failed on {mod}: {e}")
+                break
 
         return None
 

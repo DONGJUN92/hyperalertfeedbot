@@ -435,6 +435,19 @@ class TwitterTelegramBot:
             logger.warning(f"Unauthorized command from chat_id: {chat_id}")
             return
 
+        # Convenience: Allow user to paste Gemini API key directly (starts with AIzaSy)
+        clean_text = text.strip()
+        if clean_text.startswith("AIzaSy") and len(clean_text) >= 30 and " " not in clean_text:
+            self.config_mgr.set("gemini_api_key", clean_text)
+            self.summarizer.update_api_key(clean_text)
+            self.notifier.send_telegram_message(
+                "✅ <b>Google Gemini API 키가 감지되어 즉시 등록되었습니다!</b>\n\n"
+                "• 적용 모델: <code>gemini-flash-lite-latest</code>\n"
+                "• 상태: <b>정상 연동 완료 🟢</b>\n\n"
+                "이제 모든 뉴스 및 AI 논문 수신 시 무료 AI 3줄 요약이 자동으로 적용됩니다."
+            )
+            return
+
         parts = text.split(maxsplit=1)
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -447,8 +460,8 @@ class TwitterTelegramBot:
                 "• <code>/celebs</code> : 등록된 VIP 오피니언 리더 확인\n"
                 "• <code>/status</code> : 봇 작동 상태 및 Uptime 확인\n"
                 "• <code>/test</code> 또는 <code>/check</code> : 모든 소스에서 최신 원문 1건씩 즉시 실시간 수신 점검\n\n"
-                "🤖 <b>무료 AI 3줄 요약 (Gemini 1.5 Flash)</b>\n"
-                "• <code>/gemini &lt;API_KEY&gt;</code> : Google Gemini API 키 등록\n"
+                "🤖 <b>무료 AI 3줄 요약 (Gemini Flash-Lite)</b>\n"
+                "• <code>/gemini &lt;API_KEY&gt;</code> : Google Gemini API 키 등록 (키만 바로 전송해도 자동 인식)\n"
                 "• <code>/gemini</code> : 현재 키 상태 확인 (무료 발급 링크 포함)\n"
                 "• <code>/gemini clear</code> : 키 삭제 (기본 발췌 모드로 복귀)\n\n"
                 "👤 <b>계정 관리</b>\n"
@@ -491,7 +504,7 @@ class TwitterTelegramBot:
             ntfy = self.config_mgr.get("ntfy_topic", "설정 안 됨")
             gemini_key = self.config_mgr.get("gemini_api_key", "")
             has_gemini = bool(gemini_key and not gemini_key.startswith("YOUR_"))
-            gemini_display = "Gemini 1.5 Flash 연동 중 🟢" if has_gemini else "미연동 (기본 발췌) ⚪"
+            gemini_display = "Gemini Flash-Lite 연동 중 🟢" if has_gemini else "미연동 (기본 발췌) ⚪"
 
             u_list = "\n".join([f"  • @{u}" for u in users]) if users else "  (없음)"
             k_list = "\n".join([f"  • <b>{k}</b>" for k in keywords]) if keywords else "  (없음)"
@@ -582,12 +595,13 @@ class TwitterTelegramBot:
                 has_key = bool(curr_key and not curr_key.startswith("YOUR_"))
                 masked = f"{curr_key[:6]}...{curr_key[-4:]}" if has_key else "미설정"
                 self.notifier.send_telegram_message(
-                    f"🤖 <b>Google Gemini 1.5 Flash 무료 AI 3줄 요약</b>\n\n"
+                    f"🤖 <b>Google Gemini Flash-Lite 무료 AI 3줄 요약</b>\n\n"
                     f"• 상태: {'활성화 (3줄 인사이트 요약 가동 중) 🟢' if has_key else '비활성화 (기본 발췌 모드) ⚪'}\n"
-                    f"• 등록된 API Key: <code>{masked}</code>\n\n"
+                    f"• 등록된 API Key: <code>{masked}</code>\n"
+                    f"• 적용 모델: <code>gemini-flash-lite-latest</code>\n\n"
                     f"💡 <b>설정 방법:</b>\n"
                     f"1. <a href=\"https://aistudio.google.com/app/apikey\">Google AI Studio (무료)</a> 에서 API Key 발급\n"
-                    f"2. <code>/gemini &lt;API_KEY&gt;</code> 입력하여 등록\n\n"
+                    f"2. <code>/gemini &lt;API_KEY&gt;</code> 입력 또는 키 문자열만 바로 채팅창에 전송\n\n"
                     f"키를 삭제하려면 <code>/gemini clear</code> 를 입력하세요."
                 )
                 return
@@ -599,8 +613,10 @@ class TwitterTelegramBot:
                 self.config_mgr.set("gemini_api_key", arg)
                 self.summarizer.update_api_key(arg)
                 self.notifier.send_telegram_message(
-                    "✅ <b>Gemini API 키가 성공적으로 설정되었습니다!</b>\n"
-                    "이제 모든 뉴스 및 논문 수신 시 Google Gemini 1.5 Flash의 '핵심 결론 / 세부 내용 / 파급효과' 3줄 요약이 자동으로 생성됩니다."
+                    "✅ <b>Gemini API 키가 성공적으로 설정되었습니다!</b>\n\n"
+                    "• 적용 모델: <code>gemini-flash-lite-latest</code>\n"
+                    "• 상태: <b>정상 연동 완료 🟢</b>\n\n"
+                    "이제 모든 뉴스 및 논문 수신 시 '핵심 결론 / 세부 내용 / 파급효과' 3줄 요약이 자동으로 생성됩니다."
                 )
 
         elif cmd in ["/test", "/live_test", "/check", "/check_all"]:
@@ -613,7 +629,7 @@ class TwitterTelegramBot:
             uptime = int(time.time() - START_TIME)
             gemini_key = self.config_mgr.get("gemini_api_key", "")
             has_gemini = bool(gemini_key and not gemini_key.startswith("YOUR_"))
-            gemini_status = "ON (Gemini 1.5 Flash) 🟢" if has_gemini else "OFF (기본 발췌) ⚪"
+            gemini_status = "ON (Gemini Flash-Lite) 🟢" if has_gemini else "OFF (기본 발췌) ⚪"
             self.notifier.send_telegram_message(
                 f"🟢 <b>Alpha Terminal 정상 구동 중</b>\n\n"
                 f"• 가동 시간(Uptime): {uptime}초\n"
