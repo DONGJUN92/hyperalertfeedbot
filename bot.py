@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 import urllib.parse
-import urllib.request
+import requests
 from typing import Dict, Any, List
 
 from scraper import fetch_latest_tweets
@@ -63,9 +63,7 @@ def run_keep_alive_ping():
         render_url = os.environ.get("RENDER_EXTERNAL_URL")
         if render_url:
             try:
-                req = urllib.request.Request(render_url, headers={"User-Agent": "RenderKeepAlive/1.0"})
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    pass
+                requests.get(render_url, headers={"User-Agent": "RenderKeepAlive/1.0"}, timeout=10)
                 logger.info(f"Keep-alive self-ping sent to {render_url}")
             except Exception as e:
                 logger.debug(f"Keep-alive ping error: {e}")
@@ -385,22 +383,23 @@ class TwitterTelegramBot:
             self.notifier.send_telegram_message(f"⚠️ 라이브 테스트 도중 오류 발생: {e}")
 
     def telegram_command_loop(self):
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         while self.running:
             bot_token = self.config_mgr.get("bot_token", "")
             if not bot_token or bot_token.startswith("YOUR_"):
                 time.sleep(5)
                 continue
 
-            url = f"https://api.telegram.org/bot{bot_token}/getUpdates?offset={self.last_update_id + 1}&timeout=20"
+            url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+            params = {"offset": self.last_update_id + 1, "timeout": 20}
             try:
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    if data.get("ok"):
-                        for update in data.get("result", []):
-                            self.last_update_id = max(self.last_update_id, update["update_id"])
-                            if "message" in update and "text" in update["message"]:
-                                self.handle_command(update["message"])
+                resp = requests.get(url, params=params, headers=headers, timeout=30)
+                data = resp.json()
+                if data.get("ok"):
+                    for update in data.get("result", []):
+                        self.last_update_id = max(self.last_update_id, update["update_id"])
+                        if "message" in update and "text" in update["message"]:
+                            self.handle_command(update["message"])
             except Exception as e:
                 logger.debug(f"getUpdates error (polling): {e}")
                 time.sleep(3)

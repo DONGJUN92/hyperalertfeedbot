@@ -1,11 +1,16 @@
 import json
 import logging
 import time
-import urllib.parse
-import urllib.request
+import requests
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger("x_notifier")
+
+# Standard bot headers to avoid Cloudflare/Telegram tarpit or timeout
+BOT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Content-Type": "application/json",
+}
 
 # VIP Celebrity Metadata and Badges
 CELEBRITY_BADGES = {
@@ -44,23 +49,19 @@ class Notifier:
             "disable_web_page_preview": False,
             "disable_notification": disable_notification,
         }
-        data = json.dumps(payload).encode("utf-8")
 
         for attempt in range(1, max_retries + 1):
             try:
-                req = urllib.request.Request(
-                    url, data=data, headers={"Content-Type": "application/json"}
-                )
-                with urllib.request.urlopen(req, timeout=20) as resp:
-                    res_data = json.loads(resp.read().decode("utf-8"))
-                    if res_data.get("ok"):
-                        return res_data["result"]["message_id"]
-                    else:
-                        logger.error(f"Telegram API error (Attempt {attempt}): {res_data}")
+                resp = requests.post(url, json=payload, headers=BOT_HEADERS, timeout=15)
+                res_data = resp.json()
+                if res_data.get("ok"):
+                    return res_data["result"]["message_id"]
+                else:
+                    logger.error(f"Telegram API error (Attempt {attempt}): {res_data}")
             except Exception as e:
                 logger.warning(f"Telegram send failed (Attempt {attempt}/{max_retries}): {e}")
                 if attempt < max_retries:
-                    time.sleep(2.5 * attempt)  # Exponential backoff
+                    time.sleep(2.0 * attempt)
         return None
 
     def pin_telegram_message(self, message_id: int):
@@ -73,13 +74,8 @@ class Notifier:
             "message_id": message_id,
             "disable_notification": False,
         }
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}
-        )
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                pass
+            requests.post(url, json=payload, headers=BOT_HEADERS, timeout=10)
         except Exception as e:
             logger.error(f"Failed to pin Telegram message: {e}")
 
@@ -100,11 +96,9 @@ class Notifier:
         if click_url:
             headers["Click"] = click_url
 
-        data = message.encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                logger.info(f"ntfy notification sent to topic: {self.ntfy_topic}")
+            requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=10)
+            logger.info(f"ntfy notification sent to topic: {self.ntfy_topic}")
         except Exception as e:
             logger.error(f"Failed to send ntfy push: {e}")
 
