@@ -222,11 +222,12 @@ class OpenRouterModelSelector:
 
 def clean_ai_summary(text: str) -> str:
     """
-    Post-process AI output to guarantee crystal-clear, minimal 3-bullet output.
+    Post-process AI output to guarantee crystal-clear, deep 3-bullet output without truncation.
     1. Removes any <think>...</think> blocks
     2. Strips 'Here's a thinking process' or chain-of-thought analysis
     3. Removes markdown symbols (**, #, `) and bracket noise ([핵심 결론] 등)
-    4. Normalizes to:
+    4. Combines multiple sentences per section cleanly without breaking.
+    5. Normalizes to:
        • 핵심: ...
        • 배경: ...
        • 전망: ...
@@ -252,13 +253,15 @@ def clean_ai_summary(text: str) -> str:
             if candidate_lines:
                 text = "\n".join(candidate_lines)
 
-    lines = []
-    labels = ["핵심:", "배경:", "전망:"]
-    for line in text.split("\n"):
-        line = line.strip()
+    # 3. Parse into 3 distinct sections (핵심, 배경, 전망)
+    sections = {"핵심:": [], "배경:": [], "전망:": []}
+    current_key = None
+
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
         if not line:
             continue
-        # Skip lingering thinking/meta tokens
+        # Skip meta lines
         if any(line.lower().startswith(p) for p in [
             "here", "thinking", "analyze", "role:", "field:", "title:", "excerpt:", "format", "time constraint"
         ]):
@@ -266,26 +269,59 @@ def clean_ai_summary(text: str) -> str:
 
         # Strip markdown symbols
         line = line.replace("**", "").replace("*", "").replace("`", "").replace("#", "").strip()
-        line = re.sub(r"^[-•\d\.]+\s*", "", line).strip()
 
-        # Clean bracket tags
-        line = re.sub(r"^\[핵심\s*결론\]\s*:?", "", line)
-        line = re.sub(r"^\[세부\s*내용\]\s*:?", "", line)
-        line = re.sub(r"^\[영향\s*및?\s*시사점\]\s*:?", "", line)
-        line = re.sub(r"^\[.*?\]\s*:?", "", line).strip()
+        # Identify target category header
+        detected_key = None
+        first_part = line[:20].lower()
+        if "핵심" in first_part:
+            detected_key = "핵심:"
+        elif "배경" in first_part:
+            detected_key = "배경:"
+        elif "전망" in first_part or "영향" in first_part or "시사점" in first_part:
+            detected_key = "전망:"
 
-        # Strip label if model already generated it
-        for lb in labels:
-            if line.startswith(lb):
-                line = line[len(lb):].strip()
+        if detected_key:
+            current_key = detected_key
+            content = re.sub(r"^[-•\d\.]+\s*", "", line).strip()
+            content = re.sub(r"^\[.*?\]\s*:?", "", content).strip()
+            if content.startswith(detected_key):
+                content = content[len(detected_key):].strip()
+            if content:
+                sections[current_key].append(content)
+        elif current_key:
+            # Continuation line of current bullet
+            content = re.sub(r"^[-•\d\.]+\s*", "", line).strip()
+            if content:
+                sections[current_key].append(content)
 
-        if line:
-            curr_label = labels[len(lines)] if len(lines) < len(labels) else "참고:"
-            lines.append(f"• {curr_label} {line}")
-            if len(lines) >= 3:
-                break
+    # Assemble final bullets
+    result_bullets = []
+    for key in ["핵심:", "배경:", "전망:"]:
+        if sections[key]:
+            combined = " ".join(sections[key]).strip()
+            result_bullets.append(f"• {key} {combined}")
 
-    return "\n".join(lines)
+    # Fallback to sequential parsing if model did not use standard keywords
+    if len(result_bullets) < 2:
+        result_bullets = []
+        labels = ["핵심:", "배경:", "전망:"]
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line or any(line.lower().startswith(p) for p in ["here", "thinking", "analyze"]):
+                continue
+            line = line.replace("**", "").replace("*", "").replace("`", "").replace("#", "").strip()
+            line = re.sub(r"^[-•\d\.]+\s*", "", line).strip()
+            line = re.sub(r"^\[.*?\]\s*:?", "", line).strip()
+            for lb in labels:
+                if line.startswith(lb):
+                    line = line[len(lb):].strip()
+            if line:
+                curr_label = labels[len(result_bullets)] if len(result_bullets) < len(labels) else "참고:"
+                result_bullets.append(f"• {curr_label} {line}")
+                if len(result_bullets) >= 3:
+                    break
+
+    return "\n".join(result_bullets)
 
 
 class AISummarizer:
@@ -309,7 +345,7 @@ class AISummarizer:
 
     def summarize(self, title: str, content: str, category: str = "") -> Optional[str]:
         """
-        Summarize news article or ArXiv paper into a concise 3-bullet insight using OpenRouter.
+        Summarize news article or ArXiv paper into a comprehensive 3-bullet insight using OpenRouter.
         Returns formatted string for Telegram or None if fallback needed.
         """
         if not self.api_key or self.api_key.startswith("YOUR_"):
@@ -324,22 +360,22 @@ class AISummarizer:
 
         system_prompt = (
             "너는 블룸버그 터미널의 수석 인텔리전스 에디터다.\n"
-            "의사결정자가 3초 만에 핵심을 직관적으로 파악할 수 있도록 뉴스/논문을 핵심 위주로 극도로 간결하게 브리핑한다.\n\n"
+            "의사결정자가 기술 및 정책의 본질을 한눈에 파악할 수 있도록 뉴스/논문을 충실하고 깊이 있게 분석하여 3개의 불릿으로 브리핑한다.\n\n"
             "[원칙]\n"
-            "1. 절대 생각 과정(Thinking process)이나 분석 과정, 서론, 결론, 해설을 쓰지 마라.\n"
+            "1. 절대 생각 과정(Thinking process)이나 분석 과정, 서론, 결론, 메타 발언을 쓰지 마라.\n"
             "2. 마크다운 기호(**, #, 따옴표 등)나 대괄호([])를 일체 사용하지 마라.\n"
-            "3. 오직 '• 핵심:', '• 배경:', '• 전망:'으로 시작하는 정확히 3줄의 한국어 불릿만 출력하라.\n"
-            "4. 각 줄은 1문장으로 군더더기 없이 단정적인 어조로 작성하라."
+            "3. 오직 '• 핵심:', '• 배경:', '• 전망:'으로 시작하는 정확히 3개의 한국어 불릿만 출력하라.\n"
+            "4. 내용이 중간에 잘리거나 축약되어 빈약해지지 않도록 각 불릿마다 2~3문장으로 구체적 사실, 배경/수치, 시장 및 기술적 파급효과를 충실하게 서술하라."
         )
 
         user_prompt = (
             f"분야: {category}\n"
             f"{body_text}\n\n"
-            "위 내용을 바탕으로 아래 예시와 완전히 동일한 형식의 3줄 브리핑을 한국어로 작성하라.\n\n"
+            "위 내용을 면밀히 분석하여 아래 예시 형식으로 각 항목당 2~3문장의 풍부한 맥락을 담아 한국어로 작성하라. 문장이 중간에 끊기지 않도록 완결된 문장으로 끝맺어라.\n\n"
             "[출력 예시]\n"
-            "• 핵심: (가장 중요한 사실 1문장)\n"
-            "• 배경: (구체적 원인, 수치, 관련 대상 1문장)\n"
-            "• 전망: (시장, 정책, 산업에 미칠 파급효과 1문장)"
+            "• 핵심: (가장 중요한 사건의 핵심과 본질을 2~3문장으로 명확히 서술)\n"
+            "• 배경: (구체적 발생 원인, 관련 인물/기업/기술, 진행 경과를 2~3문장으로 서술)\n"
+            "• 전망: (시장, 산업 생태계, 정책에 미칠 파급효과 및 시사점을 2~3문장으로 서술)"
         )
 
         headers = {
@@ -363,7 +399,7 @@ class AISummarizer:
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": 0.1,
-                "max_tokens": 450,
+                "max_tokens": 850,
                 "include_reasoning": False,
             }
             try:

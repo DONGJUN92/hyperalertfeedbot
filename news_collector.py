@@ -156,6 +156,27 @@ def fetch_korea_policy_news(queries: List[str] = None, limit_per_query: int = 4)
     return results
 
 
+def fetch_geeknews_full_body(topic_url: str) -> str:
+    """Fetch the full, untruncated topic body directly from GeekNews article page."""
+    if not topic_url or "news.hada.io/topic" not in topic_url:
+        return ""
+    try:
+        req = urllib.request.Request(topic_url, headers=DEFAULT_HEADERS)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            html_text = resp.read().decode("utf-8", errors="ignore")
+        m = re.search(r"<section id=['\"]topic_contents['\"][^>]*>(.*?)</section>", html_text, re.DOTALL)
+        if m:
+            raw = m.group(1)
+            raw = re.sub(r"<li>(.*?)</li>", r"• \1\n", raw, flags=re.DOTALL)
+            raw = re.sub(r"</p>", r"\n", raw)
+            clean = clean_cdata(raw)
+            if clean and len(clean) > 30:
+                return clean
+    except Exception as e:
+        logger.debug(f"Failed to fetch GeekNews full body for {topic_url}: {e}")
+    return ""
+
+
 def fetch_geeknews(limit: int = 5) -> List[Dict[str, Any]]:
     """
     Fetch latest IT/Tech/Startup curated posts from GeekNews (https://news.hada.io/rss/news).
@@ -182,16 +203,22 @@ def fetch_geeknews(limit: int = 5) -> List[Dict[str, Any]]:
             if title_m:
                 title = clean_cdata(title_m.group(1))
                 link_str = link_m.group(1).strip() if link_m else (id_m.group(1).strip() if id_m else "https://news.hada.io")
-                raw_body = content_m.group(1) if content_m else (summary_m.group(1) if summary_m else "")
-                summary = clean_cdata(raw_body)
                 pub_date = pub_m.group(1).strip() if pub_m else (upd_m.group(1).strip() if upd_m else "")
+
+                # Fetch full article body directly to avoid GeekNews RSS snippet truncation
+                full_body = fetch_geeknews_full_body(link_str) if "news.hada.io/topic" in link_str else ""
+                if full_body:
+                    summary = full_body
+                else:
+                    raw_body = content_m.group(1) if content_m else (summary_m.group(1) if summary_m else "")
+                    summary = clean_cdata(raw_body)
 
                 results.append({
                     "id": make_id(link_str),
                     "category": "긱뉴스 (GeekNews)",
                     "source": "GeekNews",
                     "title": title,
-                    "summary": summary[:450] + ("..." if len(summary) > 450 else ""),
+                    "summary": summary[:1200] + ("..." if len(summary) > 1200 else ""),
                     "url": link_str,
                     "published": pub_date,
                     "always_notify": True,
@@ -200,6 +227,7 @@ def fetch_geeknews(limit: int = 5) -> List[Dict[str, Any]]:
         logger.error(f"Error fetching GeekNews: {e}")
 
     return results
+
 
 
 def fetch_all_curated_news() -> List[Dict[str, Any]]:

@@ -310,13 +310,15 @@ class TwitterTelegramBot:
     def news_monitor_loop(self):
         """Periodically collects AI papers and economic policy / commercial law news."""
         logger.info("Initializing baseline for economic policy & AI tech news...")
-        seen_news = set(self.config_mgr.get("seen_news_ids", []))
-
-        if not seen_news:
-            initial_news = fetch_all_curated_news()
-            for n in initial_news:
+        # Register any current news items as initial baseline so old posts are never blasted on startup
+        initial_news = fetch_all_curated_news()
+        new_baseline_count = 0
+        for n in initial_news:
+            if not self.config_mgr.is_news_seen(n["id"]):
                 self.config_mgr.mark_news_seen(n["id"])
-            logger.info("News baseline registered.")
+                new_baseline_count += 1
+        if new_baseline_count > 0:
+            logger.info(f"Registered {new_baseline_count} news items as initial baseline.")
 
         while self.running:
             try:
