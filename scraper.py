@@ -24,49 +24,76 @@ DEFAULT_HEADERS = {
 METRIC_PATTERN = re.compile(r"^(\d+(\.\d+)?[KkMmBb]?)$")
 
 
+# Regex to match time strings like: 3h, 12m, 45s, Sep 6, Aug 30, 2d, 1y
+TIME_PATTERN = re.compile(r"^(\d+[smhdwy]|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|\d{1,2}월|\d{1,2}일|\d{4}년)", re.IGNORECASE)
+
+
 def parse_article_lines(article_html: str, username: str) -> Dict[str, str]:
-    """Parse text lines from an <article> HTML fragment."""
-    # Remove script and style elements
+    """Parse text lines from an <article> HTML fragment with precision."""
     cleaned = re.sub(r"<script.*?</script>", "", article_html, flags=re.DOTALL)
     cleaned = re.sub(r"<style.*?</style>", "", cleaned, flags=re.DOTALL)
-    # Replace HTML tags with newlines
     text_content = re.sub(r"<[^>]+>", "\n", cleaned)
-    
-    # Split into clean non-empty lines
     raw_lines = [html.unescape(line.strip()) for line in text_content.split("\n") if line.strip()]
-    
+
+    idx = 0
+    # 1. Skip "Pinned" badge if present
+    is_pinned = False
+    if raw_lines and raw_lines[0].lower() in ["pinned", "고정됨", "고정 트윗", "pinned post"]:
+        is_pinned = True
+        idx += 1
+
     author = username
     time_str = ""
-    content_lines = []
-    
-    # Analyze lines
-    # Typical pattern: [Author Name, @username, time, Content Line 1, Content Line 2, ..., (Show more), replies, retweets, likes, views]
-    idx = 0
-    if raw_lines and raw_lines[0].lower() != f"@{username.lower()}":
-        author = raw_lines[0]
+
+    # 2. Extract Author Name
+    if idx < len(raw_lines) and not raw_lines[idx].startswith("@"):
+        author = raw_lines[idx]
         idx += 1
-        
+
+    # 3. Skip @username
     if idx < len(raw_lines) and raw_lines[idx].startswith("@"):
         idx += 1
-        
-    if idx < len(raw_lines) and len(raw_lines[idx]) <= 10:  # time string like '3h', 'Sep 6', '12m'
-        time_str = raw_lines[idx]
-        idx += 1
-        
-    # Collect content lines, ignoring metrics at bottom and "Show more"
+
+    # 4. Extract Timestamp
+    if idx < len(raw_lines):
+        candidate = raw_lines[idx]
+        if TIME_PATTERN.match(candidate) or len(candidate) <= 8:
+            time_str = candidate
+            idx += 1
+
+    # 5. Extract Tweet Body & Clean quote headers
+    content_lines = []
     while idx < len(raw_lines):
         line = raw_lines[idx]
-        if line.lower() == "show more":
+        if line.lower() in ["show more", "더 보기"]:
             idx += 1
             continue
-        # Check if we reached the metric numbers at the bottom
-        # If remaining lines are all metric-like, stop
+
+        # Check for bottom metrics (replies, retweets, likes, views numbers)
         remaining = raw_lines[idx:]
-        if all(METRIC_PATTERN.match(item) for item in remaining) and len(remaining) <= 5:
+        if all(METRIC_PATTERN.match(item) for item in remaining) and len(remaining) <= 6:
             break
+
+        # Detect quoted tweet pattern: [Author, @handle, Time]
+        if idx + 2 < len(raw_lines) and raw_lines[idx + 1].startswith("@") and (TIME_PATTERN.match(raw_lines[idx + 2]) or len(raw_lines[idx + 2]) <= 8):
+            q_author = raw_lines[idx]
+            q_handle = raw_lines[idx + 1]
+            q_time = raw_lines[idx + 2]
+            content_lines.append(f"\n[인용: {q_author} ({q_handle}) · {q_time}]")
+            idx += 3
+            continue
+
+        # Detect raw quoted handle directly: [@handle, Time]
+        if line.startswith("@") and idx + 1 < len(raw_lines) and TIME_PATTERN.match(raw_lines[idx + 1]):
+            q_handle = line
+            q_time = raw_lines[idx + 1]
+            content_lines.append(f"\n[인용: {q_handle} · {q_time}]")
+            idx += 2
+            continue
+
         content_lines.append(line)
         idx += 1
-        
+
     tweet_text = "\n".join(content_lines).strip()
     return {
         "author": author,

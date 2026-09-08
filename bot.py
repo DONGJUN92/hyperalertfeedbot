@@ -12,6 +12,7 @@ from typing import Dict, Any, List
 
 from scraper import fetch_latest_tweets
 from notifier import Notifier
+from summarizer import AISummarizer
 from news_collector import (
     fetch_all_curated_news,
     fetch_korea_policy_news,
@@ -89,6 +90,7 @@ class ConfigManager:
                     "enable_news_feed": True,
                     "news_check_interval_seconds": 300,
                     "ntfy_topic": "",
+                    "gemini_api_key": "",
                     "seen_tweet_ids": [],
                     "seen_news_ids": [],
                 }
@@ -138,6 +140,10 @@ class ConfigManager:
         env_ntfy = os.environ.get("NTFY_TOPIC")
         if env_ntfy is not None:
             self.config["ntfy_topic"] = env_ntfy.strip()
+
+        env_gemini = os.environ.get("GEMINI_API_KEY")
+        if env_gemini:
+            self.config["gemini_api_key"] = env_gemini.strip()
 
     def save(self):
         with self.lock:
@@ -218,10 +224,12 @@ class ConfigManager:
 class TwitterTelegramBot:
     def __init__(self):
         self.config_mgr = ConfigManager()
+        self.summarizer = AISummarizer(api_key=self.config_mgr.get("gemini_api_key", ""))
         self.notifier = Notifier(
             bot_token=self.config_mgr.get("bot_token", ""),
             chat_id=self.config_mgr.get("chat_id", ""),
             ntfy_topic=self.config_mgr.get("ntfy_topic", ""),
+            summarizer=self.summarizer,
         )
         self.running = True
         self.last_update_id = 0
@@ -434,11 +442,15 @@ class TwitterTelegramBot:
         if cmd in ["/start", "/help"]:
             reply = (
                 "🏛️ <b>Alpha Intelligence Feed 터미널 안내</b>\n\n"
-                "📋 <b>상태 및 설정</b>\n"
-                "• <code>/list</code> : 감시 계정 & 긴급 키워드 목록 조회\n"
+                "📋 <b>상태 및 점검</b>\n"
+                "• <code>/list</code> : 감시 계정, 키워드, AI 요약 설정 조회\n"
                 "• <code>/celebs</code> : 등록된 VIP 오피니언 리더 확인\n"
-                "• <code>/status</code> : 봇 작동 상태 확인\n"
-                "• <code>/test</code> 또는 <code>/check</code> : 모든 7개 소스에서 최신 원문 1건씩 즉시 실시간 수신 점검\n\n"
+                "• <code>/status</code> : 봇 작동 상태 및 Uptime 확인\n"
+                "• <code>/test</code> 또는 <code>/check</code> : 모든 소스에서 최신 원문 1건씩 즉시 실시간 수신 점검\n\n"
+                "🤖 <b>무료 AI 3줄 요약 (Gemini 1.5 Flash)</b>\n"
+                "• <code>/gemini &lt;API_KEY&gt;</code> : Google Gemini API 키 등록\n"
+                "• <code>/gemini</code> : 현재 키 상태 확인 (무료 발급 링크 포함)\n"
+                "• <code>/gemini clear</code> : 키 삭제 (기본 발췌 모드로 복귀)\n\n"
                 "👤 <b>계정 관리</b>\n"
                 "• <code>/add_user &lt;아이디&gt;</code> : 감시할 X 계정 추가\n"
                 "• <code>/del_user &lt;아이디&gt;</code> : 감시 계정 제거\n\n"
@@ -477,6 +489,9 @@ class TwitterTelegramBot:
             interval = self.config_mgr.get("check_interval_seconds", 30)
             news_feed = "ON 🟢" if self.config_mgr.get("enable_news_feed", True) else "OFF 🔴"
             ntfy = self.config_mgr.get("ntfy_topic", "설정 안 됨")
+            gemini_key = self.config_mgr.get("gemini_api_key", "")
+            has_gemini = bool(gemini_key and not gemini_key.startswith("YOUR_"))
+            gemini_display = "Gemini 1.5 Flash 연동 중 🟢" if has_gemini else "미연동 (기본 발췌) ⚪"
 
             u_list = "\n".join([f"  • @{u}" for u in users]) if users else "  (없음)"
             k_list = "\n".join([f"  • <b>{k}</b>" for k in keywords]) if keywords else "  (없음)"
@@ -486,6 +501,7 @@ class TwitterTelegramBot:
                 f"👤 <b>감시 중인 VIP 계정 ({len(users)}개):</b>\n{u_list}\n\n"
                 f"🚨 <b>긴급 경보 키워드 ({len(keywords)}개):</b>\n{k_list}\n\n"
                 f"📰 <b>1차 소스 뉴스 피드:</b> {news_feed}\n"
+                f"🤖 <b>AI 3줄 요약 엔진:</b> {gemini_display}\n"
                 f"⏱️ <b>트위터 확인 주기:</b> {interval}초\n"
                 f"🔔 <b>ntfy 사이렌 토픽:</b> <code>{ntfy}</code>"
             )
@@ -560,6 +576,33 @@ class TwitterTelegramBot:
                     f"안드로이드 ntfy 앱에서 <b>{topic}</b> 토픽을 구독하면 긴급 사이렌을 수신합니다."
                 )
 
+        elif cmd in ["/gemini", "/set_gemini"]:
+            if not arg:
+                curr_key = self.config_mgr.get("gemini_api_key", "")
+                has_key = bool(curr_key and not curr_key.startswith("YOUR_"))
+                masked = f"{curr_key[:6]}...{curr_key[-4:]}" if has_key else "미설정"
+                self.notifier.send_telegram_message(
+                    f"🤖 <b>Google Gemini 1.5 Flash 무료 AI 3줄 요약</b>\n\n"
+                    f"• 상태: {'활성화 (3줄 인사이트 요약 가동 중) 🟢' if has_key else '비활성화 (기본 발췌 모드) ⚪'}\n"
+                    f"• 등록된 API Key: <code>{masked}</code>\n\n"
+                    f"💡 <b>설정 방법:</b>\n"
+                    f"1. <a href=\"https://aistudio.google.com/app/apikey\">Google AI Studio (무료)</a> 에서 API Key 발급\n"
+                    f"2. <code>/gemini &lt;API_KEY&gt;</code> 입력하여 등록\n\n"
+                    f"키를 삭제하려면 <code>/gemini clear</code> 를 입력하세요."
+                )
+                return
+            if arg.lower() in ["clear", "none", "삭제"]:
+                self.config_mgr.set("gemini_api_key", "")
+                self.summarizer.update_api_key("")
+                self.notifier.send_telegram_message("🤖 Gemini API 키가 삭제되었습니다. (기본 발췌 모드로 복귀)")
+            else:
+                self.config_mgr.set("gemini_api_key", arg)
+                self.summarizer.update_api_key(arg)
+                self.notifier.send_telegram_message(
+                    "✅ <b>Gemini API 키가 성공적으로 설정되었습니다!</b>\n"
+                    "이제 모든 뉴스 및 논문 수신 시 Google Gemini 1.5 Flash의 '핵심 결론 / 세부 내용 / 파급효과' 3줄 요약이 자동으로 생성됩니다."
+                )
+
         elif cmd in ["/test", "/live_test", "/check", "/check_all"]:
             threading.Thread(target=self.run_live_test_thread, daemon=True).start()
 
@@ -568,12 +611,16 @@ class TwitterTelegramBot:
             seen_tweets = len(self.config_mgr.get("seen_tweet_ids", []))
             seen_news = len(self.config_mgr.get("seen_news_ids", []))
             uptime = int(time.time() - START_TIME)
+            gemini_key = self.config_mgr.get("gemini_api_key", "")
+            has_gemini = bool(gemini_key and not gemini_key.startswith("YOUR_"))
+            gemini_status = "ON (Gemini 1.5 Flash) 🟢" if has_gemini else "OFF (기본 발췌) ⚪"
             self.notifier.send_telegram_message(
                 f"🟢 <b>Alpha Terminal 정상 구동 중</b>\n\n"
                 f"• 가동 시간(Uptime): {uptime}초\n"
                 f"• 감시 중인 VIP 계정: {len(users)}개\n"
                 f"• 누적 트윗 기록: {seen_tweets}개\n"
                 f"• 누적 뉴스 기록: {seen_news}개\n"
+                f"• AI 3줄 요약: {gemini_status}\n"
                 f"• 뉴스 피드 상태: {'ON 🟢' if self.config_mgr.get('enable_news_feed', True) else 'OFF 🔴'}\n"
                 f"• 확인 주기: {self.config_mgr.get('check_interval_seconds', 30)}초"
             )

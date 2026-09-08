@@ -22,15 +22,18 @@ CELEBRITY_BADGES = {
 
 
 class Notifier:
-    def __init__(self, bot_token: str, chat_id: str, ntfy_topic: str = ""):
+    def __init__(self, bot_token: str, chat_id: str, ntfy_topic: str = "", summarizer=None):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.ntfy_topic = ntfy_topic.strip() if ntfy_topic else ""
+        self.summarizer = summarizer
 
-    def update_credentials(self, bot_token: str, chat_id: str, ntfy_topic: str = ""):
+    def update_credentials(self, bot_token: str, chat_id: str, ntfy_topic: str = "", summarizer=None):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.ntfy_topic = ntfy_topic.strip() if ntfy_topic else ""
+        if summarizer is not None:
+            self.summarizer = summarizer
 
     def send_telegram_message(self, text: str, disable_notification: bool = False, max_retries: int = 3) -> Optional[int]:
         """Send a message via Telegram bot with automatic retries. Returns message_id if successful."""
@@ -91,7 +94,7 @@ class Notifier:
         headers = {
             "Title": title.encode("utf-8").decode("latin-1", errors="ignore"),
             "Priority": "urgent" if is_emergency else "default",
-            "Tags": "warning,rotating_light,loudspeaker" if is_emergency else "speech_balloon",
+            "Tags": "warning,loudspeaker" if is_emergency else "speech_balloon",
         }
         if click_url:
             headers["Click"] = click_url
@@ -103,31 +106,33 @@ class Notifier:
             logger.error(f"Failed to send ntfy push: {e}")
 
     def notify_tweet(self, tweet: Dict[str, Any], matched_keywords: List[str]):
-        """Format and dispatch notification for a new tweet from VIP celebrities."""
+        """Format and dispatch notification for a new tweet using clean terminal typography."""
         username = tweet.get("username", "")
         clean_user = username.strip().lstrip("@").lower()
-        badge_info = CELEBRITY_BADGES.get(clean_user, ("🌟 글로벌 오피니언 리더", username))
+        badge_info = CELEBRITY_BADGES.get(clean_user, ("VIP", username))
         badge, display_name = badge_info
 
         author = tweet.get("author") or display_name
+        time_str = tweet.get("time", "")
         text = tweet.get("text", "")
         url = tweet.get("url", "")
 
         is_emergency = len(matched_keywords) > 0
 
         safe_author = html_escape(author)
+        safe_time = html_escape(time_str)
         safe_text = html_escape(text)
 
+        header_tag = "[URGENT]" if is_emergency else f"[{badge}]"
+        time_meta = f" · {safe_time}" if safe_time else ""
+
         if is_emergency:
-            kw_str = ", ".join([f"<b>{html_escape(k)}</b>" for k in matched_keywords])
+            kw_str = ", ".join([f"<code>{html_escape(k)}</code>" for k in matched_keywords])
             msg = (
-                f"🚨🚨🚨 <b>[긴급 경보: KEYWORD 감지]</b> 🚨🚨🚨\n\n"
-                f"🏷️ <b>분류:</b> {badge}\n"
-                f"👤 <b>작성자:</b> @{username} ({safe_author})\n"
-                f"🎯 <b>감지 키워드:</b> {kw_str}\n\n"
-                f"📝 <b>트윗 원문:</b>\n{safe_text}\n\n"
-                f"🔗 <a href=\"{url}\">트윗 1차 원문 바로가기</a>\n"
-                f"🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨"
+                f"<b>{header_tag} @{username}</b> ({safe_author}){time_meta}\n\n"
+                f"<blockquote>{safe_text}</blockquote>\n\n"
+                f"• <b>감지 키워드:</b> {kw_str}\n"
+                f"• <b>원문 링크:</b> <a href=\"{url}\">x.com/{username}</a>"
             )
             msg_id = self.send_telegram_message(msg, disable_notification=False)
             if msg_id:
@@ -135,38 +140,36 @@ class Notifier:
 
             time.sleep(0.5)
             self.send_telegram_message(
-                f"⚡ <b>[긴급 알림 리마인더]</b> @{username} 님의 트윗에 긴급 키워드({kw_str})가 감지되었습니다!",
+                f"⚡ <b>[긴급 경보]</b> @{username} 계정에서 긴급 키워드({kw_str})가 감지되었습니다.",
                 disable_notification=False,
             )
 
-            ntfy_title = f"🚨 긴급: @{username} [{', '.join(matched_keywords)}] 감지!"
             self.send_ntfy_push(
-                title=ntfy_title,
-                message=text[:500],
+                title=f"[URGENT] @{username}: {', '.join(matched_keywords)}",
+                message=text[:300],
                 click_url=url,
                 is_emergency=True,
             )
         else:
             msg = (
-                f"📢 <b>[VIP 트윗]</b> {badge}\n"
-                f"👤 <b>@{username}</b> ({safe_author})\n\n"
-                f"{safe_text}\n\n"
-                f"🔗 <a href=\"{url}\">트윗 1차 원문 바로가기</a>"
+                f"<b>{header_tag} @{username}</b> ({safe_author}){time_meta}\n\n"
+                f"<blockquote>{safe_text}</blockquote>\n\n"
+                f"• <b>원문 링크:</b> <a href=\"{url}\">x.com/{username}</a>"
             )
             self.send_telegram_message(msg, disable_notification=False)
 
             if self.ntfy_topic:
                 self.send_ntfy_push(
-                    title=f"새 트윗: @{username} ({safe_author})",
-                    message=text[:500],
+                    title=f"@{username}: {text[:100]}",
+                    message=text[:300],
                     click_url=url,
                     is_emergency=False,
                 )
 
     def notify_news(self, news_item: Dict[str, Any], matched_keywords: List[str]):
-        """Format and dispatch notification for 1st-source news (AI papers, economic/commercial law policy)."""
-        category = news_item.get("category", "📰 정책 & 테크")
-        source = news_item.get("source", "원문 소스")
+        """Format and dispatch notification for news with AI 3-bullet summary in blockquotes."""
+        category = news_item.get("category", "정책 & 테크")
+        source = news_item.get("source", "원문")
         title = news_item.get("title", "")
         summary = news_item.get("summary", "")
         url = news_item.get("url", "")
@@ -174,41 +177,68 @@ class Notifier:
 
         is_emergency = len(matched_keywords) > 0
 
-        safe_title = html_escape(title)
-        safe_summary = html_escape(summary)
-        safe_source = html_escape(source)
+        # Determine clean category tag
+        if "상법" in category or "상법" in title:
+            tag = "POLICY/상법"
+        elif "금융" in category or "경제" in category:
+            tag = "MACRO POLICY"
+        elif "논문" in category or "ArXiv" in source:
+            tag = "AI RESEARCH"
+        else:
+            tag = "TECH"
 
         if is_emergency:
-            kw_str = ", ".join([f"<b>{html_escape(k)}</b>" for k in matched_keywords])
-            msg = (
-                f"🚨🚨🚨 <b>[정책/테크 긴급 속보]</b> 🚨🚨🚨\n\n"
-                f"🏷️ <b>분야:</b> {category} ({safe_source})\n"
-                f"🎯 <b>감지 키워드:</b> {kw_str}\n"
-                f"📌 <b>제목:</b> {safe_title}\n\n"
-                f"📝 <b>원문 요약 / 초록:</b>\n{safe_summary}\n\n"
-                f"⏱️ <b>일시:</b> {published}\n"
-                f"🔗 <a href=\"{url}\">1차 원문 / 공문 바로가기</a>\n"
-                f"🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨"
-            )
-            msg_id = self.send_telegram_message(msg, disable_notification=False)
-            if msg_id:
-                self.pin_telegram_message(msg_id)
+            tag = f"URGENT {tag}"
 
+        safe_title = html_escape(title)
+        safe_source = html_escape(source)
+        safe_published = html_escape(published)
+
+        # Generate AI Summary if summarizer is present
+        ai_summary = None
+        if self.summarizer:
+            try:
+                ai_summary = self.summarizer.summarize(title, summary, category)
+            except Exception as e:
+                logger.debug(f"AI summary error: {e}")
+
+        # Clean blockquote body
+        if ai_summary:
+            body_block = html_escape(ai_summary)
+        else:
+            clean_s = (summary or "").strip()
+            clean_t = (title or "").strip()
+            if not clean_s or clean_s == clean_t or (len(clean_t) > 20 and clean_s.startswith(clean_t[:30])):
+                body_block = "상세 속보 및 전체 분석 전문은 아래 1차 출처 링크에서 바로 확인할 수 있습니다."
+            else:
+                body_block = html_escape(clean_s)
+
+        kw_line = ""
+        if is_emergency:
+            kw_str = ", ".join([f"<code>{html_escape(k)}</code>" for k in matched_keywords])
+            kw_line = f"• <b>감지 키워드:</b> {kw_str}\n"
+
+        pub_meta = f" · {safe_published}" if safe_published else ""
+
+        msg = (
+            f"<b>[{tag}] {safe_title}</b>\n"
+            f"<code>{safe_source}</code>{pub_meta}\n\n"
+            f"<blockquote>{body_block}</blockquote>\n\n"
+            f"{kw_line}"
+            f"• <b>원문 보기:</b> <a href=\"{url}\">1차 출처 바로가기</a>"
+        )
+
+        msg_id = self.send_telegram_message(msg, disable_notification=False)
+        if is_emergency and msg_id:
+            self.pin_telegram_message(msg_id)
+
+        if is_emergency and self.ntfy_topic:
             self.send_ntfy_push(
-                title=f"🚨 긴급 정책/테크: [{', '.join(matched_keywords)}]",
+                title=f"[{tag}] {title[:60]}",
                 message=title,
                 click_url=url,
                 is_emergency=True,
             )
-        else:
-            msg = (
-                f"📰 <b>[{category}]</b> {safe_source}\n\n"
-                f"📌 <b>{safe_title}</b>\n\n"
-                f"{safe_summary}\n\n"
-                f"⏱️ {published}\n"
-                f"🔗 <a href=\"{url}\">1차 원문 바로가기</a>"
-            )
-            self.send_telegram_message(msg, disable_notification=False)
 
 
 def html_escape(text: str) -> str:
@@ -220,3 +250,4 @@ def html_escape(text: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+

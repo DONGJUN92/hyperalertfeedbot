@@ -21,6 +21,7 @@
   "enable_news_feed": true,
   "news_check_interval_seconds": 300,
   "ntfy_topic": "",
+  "gemini_api_key": "",
   "seen_tweet_ids": [],
   "seen_news_ids": []
 }
