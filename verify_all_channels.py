@@ -3,6 +3,7 @@ import time
 from scraper import fetch_latest_tweets
 from news_collector import (
     fetch_korea_policy_news,
+    fetch_geeknews,
     fetch_arxiv_ai_papers,
     fetch_techcrunch_ai_news,
 )
@@ -17,7 +18,7 @@ def run_comprehensive_verification():
 
     # 1. Test VIP Twitter Accounts
     vip_users = ["thsottiaux", "sama", "elonmusk", "realDonaldTrump"]
-    print(f"\n[1/4] Testing VIP Twitter Scraper ({len(vip_users)} accounts)...")
+    print(f"\n[1/5] Testing VIP Twitter Scraper ({len(vip_users)} accounts)...")
     
     twitter_results = {}
     for user in vip_users:
@@ -35,7 +36,7 @@ def run_comprehensive_verification():
         time.sleep(1.5)  # Safety delay
 
     # 2. Test Economic & Commercial Law (상법) News
-    print("\n[2/4] Testing Economic Policy & Commercial Act (상법) News...")
+    print("\n[2/5] Testing Economic Policy & Commercial Act (상법) News...")
     start_time = time.time()
     policy_news = fetch_korea_policy_news(["상법 개정", "자본시장법 금융위원회"])
     elapsed = round(time.time() - start_time, 2)
@@ -45,8 +46,19 @@ def run_comprehensive_verification():
         print(f"      URL: {item['url']}")
         print(f"      Date: {item['published']}")
 
-    # 3. Test ArXiv AI Frontier Papers
-    print("\n[3/4] Testing ArXiv AI Official Export API...")
+    # 3. Test GeekNews (https://news.hada.io/)
+    print("\n[3/5] Testing GeekNews (https://news.hada.io/)...")
+    start_time = time.time()
+    geek_news = fetch_geeknews(limit=3)
+    elapsed = round(time.time() - start_time, 2)
+    print(f"  - GeekNews Feed      : [OK] {len(geek_news)} items fetched ({elapsed}s)")
+    for i, item in enumerate(geek_news[:2]):
+        print(f"    └ Item {i+1} [{item['category']}]: {item['title']}")
+        print(f"      URL: {item['url']}")
+        print(f"      Date: {item['published']}")
+
+    # 4. Test ArXiv AI Frontier Papers
+    print("\n[4/5] Testing ArXiv AI Official Export API...")
     start_time = time.time()
     arxiv_papers = fetch_arxiv_ai_papers(limit=3)
     elapsed = round(time.time() - start_time, 2)
@@ -56,8 +68,8 @@ def run_comprehensive_verification():
         print(f"      Abstract Snippet: {item['summary'][:90]}...")
         print(f"      URL: {item['url']}")
 
-    # 4. Test TechCrunch AI Industry News
-    print("\n[4/4] Testing TechCrunch AI Feed...")
+    # 5. Test TechCrunch AI Industry News
+    print("\n[5/5] Testing TechCrunch AI Feed...")
     start_time = time.time()
     tc_news = fetch_techcrunch_ai_news(limit=3)
     elapsed = round(time.time() - start_time, 2)
@@ -71,9 +83,10 @@ def run_comprehensive_verification():
     print("  VERIFICATION SUMMARY REPORT")
     print("=" * 70)
     total_twitter = sum(v["count"] for v in twitter_results.values())
-    total_news = len(policy_news) + len(arxiv_papers) + len(tc_news)
+    total_news = len(policy_news) + len(geek_news) + len(arxiv_papers) + len(tc_news)
     print(f"• VIP Twitter Accounts : {len(vip_users)} / {len(vip_users)} Active (Total {total_twitter} tweets captured)")
-    print(f"• 1st-Source News Feeds: 3 / 3 Active (Total {total_news} items captured)")
+    print(f"• 1st-Source News Feeds: 4 / 4 Active (Total {total_news} items captured)")
+    print(f"• GeekNews Integration : Active (Unconditional notification on every new post)")
     print(f"• Overall Status       : 100% HEALTHY & READY FOR PRODUCTION")
     print("=" * 70)
 

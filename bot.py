@@ -16,6 +16,7 @@ from summarizer import AISummarizer
 from news_collector import (
     fetch_all_curated_news,
     fetch_korea_policy_news,
+    fetch_geeknews,
     fetch_arxiv_ai_papers,
     fetch_techcrunch_ai_news,
 )
@@ -344,7 +345,7 @@ class TwitterTelegramBot:
         try:
             self.notifier.send_telegram_message(
                 "🔍 <b>[라이브 테스트 가동]</b>\n"
-                "모든 소스(VIP 트위터 4인 + 정책·상법 뉴스 + AI 논문 + 테크 속보)에서 <b>가장 최근 원문 1건씩</b>을 실시간으로 가져옵니다...\n"
+                "모든 소스(VIP 트위터 4인 + 정책·상법 뉴스 + 긱뉴스 + AI 논문 + 테크 속보)에서 <b>가장 최근 원문 1건씩</b>을 실시간으로 가져옵니다...\n"
                 "<i>(약 10~15초 소요됩니다)</i>"
             )
 
@@ -370,13 +371,22 @@ class TwitterTelegramBot:
                 self.notifier.notify_news(item, matched)
             time.sleep(2.0)
 
-            # 3. ArXiv CS.AI Frontier Papers
+            # 3. GeekNews (https://news.hada.io/) - notify without keywords
+            geek_items = fetch_geeknews(limit=1)
+            if geek_items:
+                item = geek_items[0]
+                text_to_check = (item.get("title", "") + " " + item.get("summary", "")).lower()
+                matched = [k for k in keywords if k in text_to_check]
+                self.notifier.notify_news(item, matched)
+            time.sleep(2.0)
+
+            # 4. ArXiv CS.AI Frontier Papers
             arxiv_items = fetch_arxiv_ai_papers(limit=1)
             if arxiv_items:
                 self.notifier.notify_news(arxiv_items[0], matched_keywords=[])
             time.sleep(2.0)
 
-            # 4. TechCrunch AI Industry News
+            # 5. TechCrunch AI Industry News
             tc_items = fetch_techcrunch_ai_news(limit=1)
             if tc_items:
                 self.notifier.notify_news(tc_items[0], matched_keywords=[])

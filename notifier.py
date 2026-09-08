@@ -184,6 +184,8 @@ class Notifier:
             tag = "MACRO POLICY"
         elif "논문" in category or "ArXiv" in source:
             tag = "AI RESEARCH"
+        elif "GeekNews" in source or "긱뉴스" in category:
+            tag = "GEEKNEWS"
         else:
             tag = "TECH"
 

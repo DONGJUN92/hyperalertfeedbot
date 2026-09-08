@@ -156,14 +156,62 @@ def fetch_korea_policy_news(queries: List[str] = None, limit_per_query: int = 4)
     return results
 
 
+def fetch_geeknews(limit: int = 5) -> List[Dict[str, Any]]:
+    """
+    Fetch latest IT/Tech/Startup curated posts from GeekNews (https://news.hada.io/rss/news).
+    Always parsed and notified without requiring keyword matching.
+    """
+    url = "https://news.hada.io/rss/news"
+    req = urllib.request.Request(url, headers=DEFAULT_HEADERS)
+    results = []
+
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            xml_text = resp.read().decode("utf-8", errors="ignore")
+
+        entries = re.findall(r"<entry>(.*?)</entry>", xml_text, re.DOTALL)
+        for entry in entries[:limit]:
+            title_m = re.search(r"<title>(.*?)</title>", entry, re.DOTALL)
+            link_m = re.search(r"href=['\"]([^'\"]+)['\"]", entry)
+            id_m = re.search(r"<id>(.*?)</id>", entry, re.DOTALL)
+            content_m = re.search(r"<content[^>]*>(.*?)</content>", entry, re.DOTALL)
+            summary_m = re.search(r"<summary>(.*?)</summary>", entry, re.DOTALL)
+            pub_m = re.search(r"<published>(.*?)</published>", entry, re.DOTALL)
+            upd_m = re.search(r"<updated>(.*?)</updated>", entry, re.DOTALL)
+
+            if title_m:
+                title = clean_cdata(title_m.group(1))
+                link_str = link_m.group(1).strip() if link_m else (id_m.group(1).strip() if id_m else "https://news.hada.io")
+                raw_body = content_m.group(1) if content_m else (summary_m.group(1) if summary_m else "")
+                summary = clean_cdata(raw_body)
+                pub_date = pub_m.group(1).strip() if pub_m else (upd_m.group(1).strip() if upd_m else "")
+
+                results.append({
+                    "id": make_id(link_str),
+                    "category": "긱뉴스 (GeekNews)",
+                    "source": "GeekNews",
+                    "title": title,
+                    "summary": summary[:450] + ("..." if len(summary) > 450 else ""),
+                    "url": link_str,
+                    "published": pub_date,
+                    "always_notify": True,
+                })
+    except Exception as e:
+        logger.error(f"Error fetching GeekNews: {e}")
+
+    return results
+
+
 def fetch_all_curated_news() -> List[Dict[str, Any]]:
-    """Fetch curated items across AI, IT Tech, and Economic / Commercial law policy."""
+    """Fetch curated items across AI, IT Tech, Economic / Commercial law policy, and GeekNews."""
     all_items = []
     # 1. Economic / Commercial Law (상법)
     all_items.extend(fetch_korea_policy_news(["상법 개정", "자본시장법 금융위원회", "공정거래위원회"]))
-    # 2. ArXiv AI
+    # 2. GeekNews (https://news.hada.io/) - notify on every new post
+    all_items.extend(fetch_geeknews(limit=5))
+    # 3. ArXiv AI
     all_items.extend(fetch_arxiv_ai_papers(limit=3))
-    # 3. TechCrunch AI
+    # 4. TechCrunch AI
     all_items.extend(fetch_techcrunch_ai_news(limit=3))
     return all_items
 
