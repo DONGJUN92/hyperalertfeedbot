@@ -107,49 +107,59 @@ def fetch_techcrunch_ai_news(limit: int = 5) -> List[Dict[str, Any]]:
 
 def fetch_korea_policy_news(queries: List[str] = None, limit_per_query: int = 4) -> List[Dict[str, Any]]:
     """
-    Fetch primary economic policy & Commercial Act (상법) news via real-time Google News RSS.
+    Fetch primary economic policy & Commercial Act (상법) news with rich real-time summaries.
+    Uses Daum News real-time search to guarantee authentic Korean lead paragraphs/abstracts for AI summarization.
     """
     if queries is None:
-        queries = ["상법 개정", "경제정책 금융위원회"]
+        queries = ["상법 개정", "공정거래위원회", "금융위원회 경제정책"]
 
     results = []
     seen_urls = set()
 
     for q in queries:
         try:
-            encoded_query = urllib.parse.quote(q)
-            url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
+            url = "https://search.daum.net/search?w=news&sort=recency&q=" + urllib.parse.quote(q)
             req = urllib.request.Request(url, headers=DEFAULT_HEADERS)
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                xml_text = resp.read().decode("utf-8", errors="ignore")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                html_text = resp.read().decode("utf-8", errors="ignore")
 
-            items = re.findall(r"<item>(.*?)</item>", xml_text, re.DOTALL)
-            for item in items[:limit_per_query]:
-                title_m = re.search(r"<title>(.*?)</title>", item, re.DOTALL)
-                link_m = re.search(r"<link>(.*?)</link>", item, re.DOTALL)
-                pub_m = re.search(r"<pubDate>(.*?)</pubDate>", item, re.DOTALL)
-                desc_m = re.search(r"<description>(.*?)</description>", item, re.DOTALL)
+            try:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(html_text, "html.parser")
+                items = soup.find_all("div", class_="c-item-content")
+                count = 0
+                for item in items:
+                    t_el = item.find("strong", class_="tit-g")
+                    d_el = item.find("p", class_="conts-desc")
+                    a_el = item.find("a", class_="tit-g") or item.find("a", class_="thumb_bf") or (t_el.find_parent("a") if t_el else None) or item.find("a")
+                    sub_el = item.find("span", class_="gem-subinfo") or item.find("span", class_="txt_info")
 
-                if title_m and link_m:
-                    link_str = link_m.group(1).strip()
-                    if link_str in seen_urls:
-                        continue
-                    seen_urls.add(link_str)
+                    if t_el:
+                        link_str = a_el.get("href", "").strip() if a_el else ""
+                        if not link_str or link_str in seen_urls:
+                            continue
+                        seen_urls.add(link_str)
 
-                    title = clean_cdata(title_m.group(1))
-                    summary = clean_cdata(desc_m.group(1)) if desc_m else ""
-                    published = pub_m.group(1).strip() if pub_m else ""
+                        title = clean_cdata(t_el.get_text(strip=True))
+                        summary = clean_cdata(d_el.get_text(strip=True)) if d_el else ""
+                        pub_date = clean_cdata(sub_el.get_text(strip=True)) if sub_el else ""
 
-                    category = "🏛️ 경제 정책 · 상법" if "상법" in q else "📈 금융 & 경제 정책"
-                    results.append({
-                        "id": make_id(link_str),
-                        "category": category,
-                        "source": "정책 & 경제 속보",
-                        "title": title,
-                        "summary": summary[:400] + ("..." if len(summary) > 400 else ""),
-                        "url": link_str,
-                        "published": published,
-                    })
+                        category = "🏛️ 경제 정책 · 상법" if "상법" in q else ("⚖️ 공정위 & 규제 정책" if "공정위" in q else "📈 금융 & 경제 정책")
+                        results.append({
+                            "id": make_id(link_str),
+                            "category": category,
+                            "source": "정책 & 경제 속보",
+                            "title": title,
+                            "summary": summary,
+                            "url": link_str,
+                            "published": pub_date,
+                        })
+                        count += 1
+                        if count >= limit_per_query:
+                            break
+            except Exception as parse_err:
+                logger.debug(f"Daum soup parse error: {parse_err}")
+
         except Exception as e:
             logger.error(f"Error fetching policy news for query '{q}': {e}")
 
