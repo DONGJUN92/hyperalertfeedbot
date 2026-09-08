@@ -242,6 +242,8 @@ class Notifier:
                 is_emergency=True,
             )
 
+        return msg_id
+
 
 def html_escape(text: str) -> str:
     """Escape text for Telegram HTML parse mode."""
