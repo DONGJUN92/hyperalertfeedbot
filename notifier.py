@@ -206,7 +206,8 @@ class Notifier:
 
         # Clean blockquote body
         if ai_summary:
-            body_block = html_escape(ai_summary)
+            safe_ai = ai_summary if len(ai_summary) <= 3500 else ai_summary[:3500] + "..."
+            body_block = html_escape(safe_ai)
         else:
             clean_s = (summary or "").strip()
             clean_t = (title or "").strip()
