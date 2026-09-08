@@ -353,7 +353,7 @@ class TwitterTelegramBot:
                     tweet_content = (top_t.get("text", "") + " " + top_t.get("author", "")).lower()
                     matched = [k for k in keywords if k in tweet_content]
                     self.notifier.notify_tweet(top_t, matched)
-                time.sleep(1.5)
+                time.sleep(2.0)  # Safe delay to prevent Telegram 429 rate limit
 
             # 2. Economic Policy & Commercial Act (상법)
             policy_items = fetch_korea_policy_news(["상법 개정"], limit_per_query=1)
@@ -362,23 +362,23 @@ class TwitterTelegramBot:
                 text_to_check = (item.get("title", "") + " " + item.get("summary", "")).lower()
                 matched = [k for k in keywords if k in text_to_check]
                 self.notifier.notify_news(item, matched)
-                time.sleep(1.0)
+            time.sleep(2.0)
 
             # 3. ArXiv CS.AI Frontier Papers
             arxiv_items = fetch_arxiv_ai_papers(limit=1)
             if arxiv_items:
                 self.notifier.notify_news(arxiv_items[0], matched_keywords=[])
-                time.sleep(1.0)
+            time.sleep(2.0)
 
             # 4. TechCrunch AI Industry News
             tc_items = fetch_techcrunch_ai_news(limit=1)
             if tc_items:
                 self.notifier.notify_news(tc_items[0], matched_keywords=[])
+            time.sleep(2.0)
 
-            time.sleep(0.5)
             self.notifier.send_telegram_message(
                 "✅ <b>[전체 소스 실시간 수신 검증 완료]</b>\n"
-                "모든 채널(총 7개)의 최신 데이터가 정상적으로 수신 및 발송되었습니다!"
+                "모든 채널의 최신 데이터가 정상적으로 수신 및 발송되었습니다!"
             )
         except Exception as e:
             logger.error(f"Error during live test: {e}", exc_info=True)
