@@ -61,8 +61,8 @@ git push -u origin main
 
 | Key (변수명) | Value (값) | 설명 |
 |---|---|---|
-| `BOT_TOKEN` | `8958014274:AAEuzEZyro-C5_XA3wI5ds2Tr9nZ193qVVM` | 텔레그램 봇 토큰 |
-| `CHAT_ID` | `1415330667` | DONGJUN님의 고유 Chat ID |
+| `BOT_TOKEN` | `YOUR_TELEGRAM_BOT_TOKEN_HERE` | @BotFather에게서 발급받은 봇 토큰 |
+| `CHAT_ID` | `YOUR_TELEGRAM_CHAT_ID_HERE` | 본인의 텔레그램 Chat ID (숫자) |
 
 *(선택사항으로 `PRIORITY_KEYWORDS`나 `MONITORED_USERS`도 지정할 수 있으나, 기본값으로 머스크, 올트먼, 트럼프, 티보, 상법 등이 이미 내장되어 있습니다.)*
 
