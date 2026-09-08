@@ -13,7 +13,7 @@ OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 DEFAULT_FALLBACK_MODEL = "openrouter/free"
 EXCLUDE_KEYWORDS = [
-    "safety", "guard", "moderation", "code", "embed", "audio", "whisper", "vision-only", "clip", "preview"
+    "safety", "guard", "moderation", "code", "embed", "audio", "whisper", "vision-only", "clip", "preview", "reasoning"
 ]
 
 
@@ -220,6 +220,74 @@ class OpenRouterModelSelector:
         logger.info(f"OpenRouter 1-hour model evaluator thread started (Interval: {self.eval_interval}s).")
 
 
+def clean_ai_summary(text: str) -> str:
+    """
+    Post-process AI output to guarantee crystal-clear, minimal 3-bullet output.
+    1. Removes any <think>...</think> blocks
+    2. Strips 'Here's a thinking process' or chain-of-thought analysis
+    3. Removes markdown symbols (**, #, `) and bracket noise ([핵심 결론] 등)
+    4. Normalizes to:
+       • 핵심: ...
+       • 배경: ...
+       • 전망: ...
+    """
+    if not text:
+        return ""
+
+    # 1. Remove XML-style think blocks
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+
+    # 2. Strip thinking process preambles
+    lower_t = text.lower()
+    if any(k in lower_t for k in ["thinking process", "analyze user request", "here is a thinking", "here's a thinking"]):
+        idx = text.find("•")
+        if idx != -1:
+            text = text[idx:]
+        else:
+            candidate_lines = []
+            for l in text.split("\n"):
+                ls = l.strip()
+                if ls.startswith("•") or re.match(r"^[-*]\s*\[", ls) or re.match(r"^\d+\.\s*\[", ls):
+                    candidate_lines.append(ls)
+            if candidate_lines:
+                text = "\n".join(candidate_lines)
+
+    lines = []
+    labels = ["핵심:", "배경:", "전망:"]
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # Skip lingering thinking/meta tokens
+        if any(line.lower().startswith(p) for p in [
+            "here", "thinking", "analyze", "role:", "field:", "title:", "excerpt:", "format", "time constraint"
+        ]):
+            continue
+
+        # Strip markdown symbols
+        line = line.replace("**", "").replace("*", "").replace("`", "").replace("#", "").strip()
+        line = re.sub(r"^[-•\d\.]+\s*", "", line).strip()
+
+        # Clean bracket tags
+        line = re.sub(r"^\[핵심\s*결론\]\s*:?", "", line)
+        line = re.sub(r"^\[세부\s*내용\]\s*:?", "", line)
+        line = re.sub(r"^\[영향\s*및?\s*시사점\]\s*:?", "", line)
+        line = re.sub(r"^\[.*?\]\s*:?", "", line).strip()
+
+        # Strip label if model already generated it
+        for lb in labels:
+            if line.startswith(lb):
+                line = line[len(lb):].strip()
+
+        if line:
+            curr_label = labels[len(lines)] if len(lines) < len(labels) else "참고:"
+            lines.append(f"• {curr_label} {line}")
+            if len(lines) >= 3:
+                break
+
+    return "\n".join(lines)
+
+
 class AISummarizer:
     def __init__(self, api_key: Optional[str] = None):
         key = (api_key or os.environ.get("OPENROUTER_API_KEY", "")).strip()
@@ -254,16 +322,24 @@ class AISummarizer:
         else:
             body_text = f"기사 제목 및 속보: {title}"
 
-        # Build prompt
-        prompt = (
-            "너는 글로벌 헤지펀드와 테크 창업자를 위한 최고급 인텔리전스 분석관이다.\n"
+        system_prompt = (
+            "너는 블룸버그 터미널의 수석 인텔리전스 에디터다.\n"
+            "의사결정자가 3초 만에 핵심을 직관적으로 파악할 수 있도록 뉴스/논문을 핵심 위주로 극도로 간결하게 브리핑한다.\n\n"
+            "[원칙]\n"
+            "1. 절대 생각 과정(Thinking process)이나 분석 과정, 서론, 결론, 해설을 쓰지 마라.\n"
+            "2. 마크다운 기호(**, #, 따옴표 등)나 대괄호([])를 일체 사용하지 마라.\n"
+            "3. 오직 '• 핵심:', '• 배경:', '• 전망:'으로 시작하는 정확히 3줄의 한국어 불릿만 출력하라.\n"
+            "4. 각 줄은 1문장으로 군더더기 없이 단정적인 어조로 작성하라."
+        )
+
+        user_prompt = (
             f"분야: {category}\n"
             f"{body_text}\n\n"
-            "위 내용을 바쁜 의사결정자가 3초 만에 핵심만 파악할 수 있도록 반드시 아래 형식의 3개 불릿으로 한국어로 요약하라.\n"
-            "이모지는 일체 쓰지 말고, 군더더기 서론이나 결론 문장 없이 오직 3줄의 불릿(•)만 출력하라:\n"
-            "• [핵심 결론] (가장 중요한 사실 1문장)\n"
-            "• [세부 내용] (구체적인 수치, 대상, 배경 1문장)\n"
-            "• [영향 및 시사점] (시장/산업/정책에 미칠 파급효과 1문장)\n"
+            "위 내용을 바탕으로 아래 예시와 완전히 동일한 형식의 3줄 브리핑을 한국어로 작성하라.\n\n"
+            "[출력 예시]\n"
+            "• 핵심: (가장 중요한 사실 1문장)\n"
+            "• 배경: (구체적 원인, 수치, 관련 대상 1문장)\n"
+            "• 전망: (시장, 정책, 산업에 미칠 파급효과 1문장)"
         )
 
         headers = {
@@ -282,9 +358,13 @@ class AISummarizer:
         for mod in attempt_models:
             payload = {
                 "model": mod,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.2,
-                "max_tokens": 350,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.1,
+                "max_tokens": 450,
+                "include_reasoning": False,
             }
             try:
                 resp = requests.post(OPENROUTER_CHAT_URL, json=payload, headers=headers, timeout=16)
@@ -292,9 +372,10 @@ class AISummarizer:
                     data = resp.json()
                     choices = data.get("choices", [])
                     if choices:
-                        summary_text = choices[0].get("message", {}).get("content", "").strip()
-                        if summary_text:
-                            return summary_text
+                        raw_text = choices[0].get("message", {}).get("content", "").strip()
+                        cleaned_text = clean_ai_summary(raw_text)
+                        if cleaned_text and len(cleaned_text.split("\n")) >= 2:
+                            return cleaned_text
                 else:
                     logger.warning(f"OpenRouter ({mod}) returned HTTP {resp.status_code}: {resp.text[:200]}")
             except Exception as e:
