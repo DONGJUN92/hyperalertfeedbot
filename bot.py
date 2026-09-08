@@ -370,15 +370,8 @@ class TwitterTelegramBot:
         try:
             curr_key = self.summarizer.api_key
             has_ai = bool(curr_key and not curr_key.startswith("YOUR_"))
-            is_valid, validation_msg = self.summarizer.validate_current_key()
             active_m = self.summarizer.get_active_model()
-
-            if has_ai and not is_valid:
-                ai_badge = f"인증 오류 🔴 (<code>{validation_msg}</code>)"
-            elif has_ai and is_valid:
-                ai_badge = f"정상 가동 중 🟢 (모델: <code>{active_m}</code>)"
-            else:
-                ai_badge = "미설정 ⚪ (원문 발췌 모드)"
+            ai_badge = f"가동 중 🟢 (모델: <code>{active_m}</code>)" if has_ai else "미설정 ⚪ (원문 발췌 모드)"
 
             self.notifier.send_telegram_message(
                 "🔍 <b>[라이브 테스트 가동]</b>\n\n"
@@ -387,18 +380,6 @@ class TwitterTelegramBot:
                 "가장 최근 원문 1건씩을 실시간으로 가져옵니다...\n"
                 "<i>(AI 브리핑 생성으로 약 15~20초 소요됩니다)</i>"
             )
-
-            if has_ai and not is_valid:
-                self.notifier.send_telegram_message(
-                    f"⚠️ <b>[AI 엔진 API 키 인증 오류 안내]</b>\n\n"
-                    f"현재 설정된 API 키가 서버에서 거부되었습니다:\n"
-                    f"• <b>오류 내용:</b> <code>{validation_msg}</code>\n\n"
-                    f"이로 인해 AI 브리핑 대신 원문/기본 발췌문이 전송됩니다.\n\n"
-                    f"👉 <b>해결 방법:</b>\n"
-                    f"• OpenRouter: <a href=\"https://openrouter.ai/keys\">openrouter.ai/keys</a> 에서 새 무료 키 발급 후 <code>/openrouter &lt;KEY&gt;</code>\n"
-                    f"• Google Gemini: <a href=\"https://aistudio.google.com/app/apikey\">Google AI Studio</a> 에서 무료 키 발급 후 <code>/gemini &lt;KEY&gt;</code>\n"
-                    f"<i>(새 키 문자열만 채팅창에 바로 전송하셔도 자동 등록됩니다)</i>"
-                )
 
             # 1. VIP Twitter Accounts
             users = self.config_mgr.get("monitored_users", ["thsottiaux", "sama", "elonmusk", "realDonaldTrump"])
@@ -496,28 +477,26 @@ class TwitterTelegramBot:
             logger.warning(f"Unauthorized command from chat_id: {chat_id}")
             return
 
-        # Convenience: Allow user to paste OpenRouter API key (sk-or-) or Gemini API key (AIzaSy) directly
+        # Convenience: Allow user to paste OpenRouter API key (sk-or-) directly
         clean_text = text.strip()
-        if (clean_text.startswith("sk-or-") or clean_text.startswith("AIzaSy")) and len(clean_text) >= 20 and " " not in clean_text:
+        if clean_text.startswith("sk-or-") and len(clean_text) >= 20 and " " not in clean_text:
             self.config_mgr.set("openrouter_api_key", clean_text)
             self.summarizer.update_api_key(clean_text)
             
             is_valid, val_msg = validate_api_key(clean_text)
-            provider_name = "Google Gemini" if clean_text.startswith("AIzaSy") else "OpenRouter"
             if is_valid:
                 self.notifier.send_telegram_message(
-                    f"✅ <b>{provider_name} API 키 등록 및 유효성 검증 성공! 🟢</b>\n\n"
+                    f"✅ <b>OpenRouter API 키 등록 및 인증 성공! 🟢</b>\n\n"
                     f"• 상태: <b>{val_msg}</b>\n"
-                    f"• 적용 모델: <code>{self.summarizer.get_active_model()}</code>\n\n"
-                    "지금부터 모든 트윗 및 뉴스 수신 시 한국어 구어체 브리핑이 생성됩니다.\n"
+                    f"• 활성 모델: <code>{self.summarizer.get_active_model()}</code>\n\n"
+                    "지금부터 모든 VIP 트윗과 뉴스에 한국어 구어체 브리핑이 실시간 생성됩니다.\n"
                     "<code>/models</code> 명령어로 현재 모델 상태를 확인할 수 있습니다."
                 )
             else:
                 self.notifier.send_telegram_message(
-                    f"⚠️ <b>API 키 등록 실패 / 인증 오류 🔴</b>\n\n"
-                    f"• 공급자: {provider_name}\n"
+                    f"⚠️ <b>OpenRouter API 키 인증 오류 🔴</b>\n\n"
                     f"• 오류 원인: <code>{val_msg}</code>\n\n"
-                    "입력하신 키가 서버에서 거부되었습니다. 올바른 키인지 다시 확인해주세요."
+                    "입력하신 키가 OpenRouter에서 거부되었습니다. 올바른 키인지 다시 확인해주세요."
                 )
             return
 
@@ -564,7 +543,7 @@ class TwitterTelegramBot:
                 "• <code>/add_link &lt;URL|아이디&gt;</code> : X 링크/계정 추가 (채팅창에 URL 바로 전송해도 자동 등록!)\n"
                 "• <code>/del_link &lt;URL|아이디&gt;</code> : X 링크/계정 모니터링 해제\n"
                 "• <code>/add_user</code>, <code>/del_user</code> : 기존 아이디 전용 명령어도 계속 지원\n\n"
-                "🤖 <b>OpenRouter 무료 모델 자동 AI 3줄 요약</b>\n"
+                "🤖 <b>OpenRouter 무료 모델 자동 AI 구어체 브리핑</b>\n"
                 "• <code>/openrouter &lt;API_KEY&gt;</code> : OpenRouter API 키 등록 (키만 바로 전송해도 자동 인식)\n"
                 "• <code>/models</code> : 현재 선정된 활성 모델 및 1시간 주기 평가 현황 확인\n"
                 "• <code>/eval_models</code> : 지금 즉시 무료 모델 핑 테스트 및 최적 모델 재평가\n"
@@ -609,12 +588,13 @@ class TwitterTelegramBot:
             news_feed = "ON 🟢" if self.config_mgr.get("enable_news_feed", True) else "OFF 🔴"
             ntfy = self.config_mgr.get("ntfy_topic", "설정 안 됨")
             or_key = self.config_mgr.get("openrouter_api_key", "")
+            has_ai = bool(or_key and not or_key.startswith("YOUR_")) or bool(self.summarizer.api_key)
             status_info = self.summarizer.get_status()
             active_model = self.summarizer.get_active_model()
             latency = status_info.get("latency_seconds", 0.0)
             is_valid, val_msg = self.summarizer.validate_current_key()
             if has_ai:
-                ai_display = f"{status_info.get('provider', 'AI')} [{active_model}] 🟢" if is_valid else f"인증 실패 🔴 ({val_msg})"
+                ai_display = f"OpenRouter [{active_model}] 🟢" if is_valid else f"인증 실패 🔴 ({val_msg})"
             else:
                 ai_display = "미연동 (기본 발췌) ⚪"
 
@@ -626,7 +606,7 @@ class TwitterTelegramBot:
                 f"👤 <b>감시 중인 VIP 계정 ({len(users)}개):</b>\n{u_list}\n\n"
                 f"🚨 <b>긴급 경보 키워드 ({len(keywords)}개):</b>\n{k_list}\n\n"
                 f"📰 <b>1차 소스 뉴스 피드:</b> {news_feed}\n"
-                f"🤖 <b>AI 3줄 요약 엔진:</b> {ai_display}\n"
+                f"🤖 <b>AI 구어체 브리핑 엔진:</b> {ai_display}\n"
                 f"⏱️ <b>트위터 확인 주기:</b> {interval}초\n"
                 f"🔔 <b>ntfy 사이렌 토픽:</b> <code>{ntfy}</code>"
             )
@@ -782,7 +762,7 @@ class TwitterTelegramBot:
                     f"안드로이드 ntfy 앱에서 <b>{topic}</b> 토픽을 구독하면 긴급 사이렌을 수신합니다."
                 )
 
-        elif cmd in ["/openrouter", "/set_openrouter", "/ai_key", "/gemini"]:
+        elif cmd in ["/openrouter", "/set_openrouter", "/ai_key"]:
             if not arg:
                 curr_key = self.config_mgr.get("openrouter_api_key", "")
                 has_key = bool(curr_key and not curr_key.startswith("YOUR_"))
@@ -790,7 +770,6 @@ class TwitterTelegramBot:
                 status_info = self.summarizer.get_status()
                 active_model = self.summarizer.get_active_model()
                 latency = status_info.get("latency_seconds", 0.0)
-                provider = status_info.get("provider", "OpenRouter")
                 is_valid, val_msg = self.summarizer.validate_current_key()
 
                 if has_key:
@@ -799,16 +778,14 @@ class TwitterTelegramBot:
                     key_status_str = "미설정 ⚪ (원문 발췌 모드)"
 
                 self.notifier.send_telegram_message(
-                    f"🤖 <b>AI 브리핑 엔진 설정 (OpenRouter / Google Gemini 지원)</b>\n\n"
-                    f"• 활성 공급자: <b>{provider}</b>\n"
+                    f"🤖 <b>OpenRouter 무료 모델 AI 브리핑 설정</b>\n\n"
+                    f"• 엔진: <b>OpenRouter Free Models (비용: 0원)</b>\n"
                     f"• API 키 상태: {key_status_str}\n"
                     f"• 등록된 키: <code>{masked}</code>\n"
                     f"• 현재 적용 모델: <code>{active_model}</code>\n\n"
-                    f"💡 <b>설정 방법:</b>\n"
-                    f"1. <b>OpenRouter 무료 키:</b> <a href=\"https://openrouter.ai/keys\">openrouter.ai/keys</a> 발급 후 <code>/openrouter &lt;KEY&gt;</code>\n"
-                    f"2. <b>Google Gemini 무료 키:</b> <a href=\"https://aistudio.google.com/app/apikey\">Google AI Studio</a> 발급 후 <code>/gemini &lt;KEY&gt;</code>\n"
-                    f"<i>(키 문자열만 채팅창에 바로 전송하셔도 자동 인식됩니다)</i>\n\n"
-                    f"• <code>/models</code> : 모델 평가 현황 및 핑 확인\n"
+                    f"💡 <b>키 등록/변경 방법:</b>\n"
+                    f"• <code>/openrouter &lt;API_KEY&gt;</code> (또는 채팅창에 <code>sk-or-...</code> 키 직접 전송)\n"
+                    f"• <code>/models</code> : 무료 모델 평가 현황 및 핑 확인\n"
                     f"• <code>/openrouter clear</code> : 키 삭제"
                 )
                 return
@@ -816,22 +793,21 @@ class TwitterTelegramBot:
             if arg.lower() in ["clear", "none", "삭제"]:
                 self.config_mgr.set("openrouter_api_key", "")
                 self.summarizer.update_api_key("")
-                self.notifier.send_telegram_message("🤖 AI API 키가 삭제되었습니다. (기본 발췌 모드로 복귀)")
+                self.notifier.send_telegram_message("🤖 OpenRouter API 키가 삭제되었습니다. (기본 발췌 모드로 복귀)")
             else:
                 self.config_mgr.set("openrouter_api_key", arg)
                 self.summarizer.update_api_key(arg)
                 is_valid, val_msg = validate_api_key(arg)
-                provider_name = "Google Gemini" if arg.startswith("AIzaSy") else "OpenRouter"
                 if is_valid:
                     self.notifier.send_telegram_message(
-                        f"✅ <b>{provider_name} API 키 설정 및 인증 성공! 🟢</b>\n\n"
+                        f"✅ <b>OpenRouter API 키 설정 및 인증 성공! 🟢</b>\n\n"
                         f"• 상태: <b>{val_msg}</b>\n"
                         f"• 적용 모델: <code>{self.summarizer.get_active_model()}</code>\n\n"
                         "지금부터 모든 트윗과 뉴스에 한국어 구어체 브리핑이 실시간으로 제공됩니다."
                     )
                 else:
                     self.notifier.send_telegram_message(
-                        f"⚠️ <b>{provider_name} API 키 등록되었으나 인증 실패 🔴</b>\n\n"
+                        f"⚠️ <b>OpenRouter API 키 등록되었으나 인증 실패 🔴</b>\n\n"
                         f"• 오류 내용: <code>{val_msg}</code>\n\n"
                         "키가 올바른지 다시 확인해주세요."
                     )

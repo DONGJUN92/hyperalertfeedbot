@@ -223,24 +223,29 @@ class OpenRouterModelSelector:
 def clean_ai_summary(text: str) -> str:
     """
     Post-process AI output to guarantee a natural, conversational executive briefing.
-    1. Removes <think>...</think> and CoT analysis
-    2. Strips greetings ('안녕하세요', 'Here is a briefing') and sign-offs
-    3. Strips markdown asterisks, hashes, backticks, and bracket tags
-    4. Formats into clean, readable briefing paragraphs separated by blank lines
+    1. Removes <think>...</think> and unclosed think/thought tags.
+    2. Strips thinking process preambles and extracts Korean text.
+    3. Strips greetings ('안녕하세요', 'Here is a briefing') and sign-offs.
+    4. Strips markdown asterisks, hashes, backticks, and bracket tags.
+    5. Formats into clean, readable briefing paragraphs separated by blank lines.
     """
     if not text:
         return ""
 
-    # 1. Remove XML-style think blocks
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    # 1. Remove XML-style think/thought blocks
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<thought>.*?</thought>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    if "<think>" in text:
+        text = re.sub(r"<think>.*", "", text, flags=re.DOTALL | re.IGNORECASE)
+    if "<thought>" in text:
+        text = re.sub(r"<thought>.*", "", text, flags=re.DOTALL | re.IGNORECASE)
 
     # 2. Strip thinking process preambles
-    lower_t = text.lower()
-    if any(k in lower_t for k in ["thinking process", "analyze user request", "here is a thinking", "here's a thinking"]):
-        ko_m = re.search(r"[\uac00-\ud7a3]", text)
-        if ko_m:
-            idx = text.rfind("\n", 0, ko_m.start())
-            text = text[idx + 1:] if idx != -1 else text[ko_m.start():]
+    ko_match = re.search(r"[\uac00-\ud7a3]", text)
+    if ko_match:
+        preamble = text[:ko_match.start()].lower()
+        if any(p in preamble for p in ["thinking", "analyze", "here", "role:", "field:", "prompt", "user:"]):
+            text = text[ko_match.start():]
 
     lines = []
     for raw in text.split("\n"):
@@ -252,7 +257,7 @@ def clean_ai_summary(text: str) -> str:
 
         # Skip English meta/thinking lines
         if any(line.lower().startswith(p) for p in [
-            "here", "thinking", "analyze", "role:", "field:", "title:", "excerpt:", "format", "time constraint", "note:"
+            "here's", "here is", "thinking process", "analyze user request", "role:", "field:", "title:", "excerpt:", "format", "time constraint", "note:"
         ]):
             continue
 
@@ -279,81 +284,57 @@ def clean_ai_summary(text: str) -> str:
 
 def get_env_api_key() -> str:
     """Auto-detect OpenRouter API key across environment variable name variations."""
-    for k in ["OPENROUTER_API_KEY", "OPENROUTER_KEY", "OPEN_ROUTER_API_KEY", "OPEN_ROUTER_KEY", "OR_API_KEY", "GEMINI_API_KEY"]:
+    # 1. Explicit variable names
+    for k in [
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_KEY",
+        "OPEN_ROUTER_API_KEY",
+        "OPEN_ROUTER_KEY",
+        "OPENROUTER",
+        "OPENROUTER_TOKEN",
+        "OR_API_KEY",
+        "OR_KEY",
+        "API_KEY",
+    ]:
         val = os.environ.get(k)
         if val and val.strip() and not val.startswith("YOUR_"):
             return val.strip()
+
+    # 2. Match any environment variable whose value starts with "sk-or-"
     for k, v in os.environ.items():
-        if "openrouter" in k.lower() and "key" in k.lower():
+        if isinstance(v, str) and v.strip().startswith("sk-or-"):
+            return v.strip()
+
+    # 3. Match any environment variable with "openrouter" in key name
+    for k, v in os.environ.items():
+        if "openrouter" in k.lower():
             if v and v.strip() and not v.startswith("YOUR_"):
                 return v.strip()
+
     return ""
 
 
 def validate_api_key(api_key: str) -> Tuple[bool, str]:
-    """Live-probes an API key against OpenRouter or Google Gemini endpoints."""
+    """Live-probes an API key against OpenRouter auth endpoint."""
     if not api_key:
-        return False, "API 키가 등록되지 않았습니다."
+        return False, "OpenRouter API 키가 등록되지 않았습니다."
     key = api_key.strip()
-    if key.startswith("AIzaSy"):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-        try:
-            resp = requests.post(url, json={"contents": [{"parts": [{"text": "ping"}]}]}, timeout=10)
-            if resp.status_code == 200:
-                return True, "Google Gemini Flash 정상 인증 🟢"
-            else:
-                return False, f"Google Gemini 인증 실패 (HTTP {resp.status_code})"
-        except Exception as e:
-            return False, f"Gemini 연결 실패: {e}"
-    else:
-        url = "https://openrouter.ai/api/v1/auth/key"
-        headers = {"Authorization": f"Bearer {key}"}
-        try:
-            resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json().get("data", {})
-                label = data.get("label", "OpenRouter Key")
-                return True, f"OpenRouter 정상 인증 🟢 ({label})"
-            elif resp.status_code == 401:
-                return False, "OpenRouter 401 Unauthorized (User not found): 계정이 없거나 키가 만료/삭제되었습니다."
-            else:
-                return False, f"OpenRouter 인증 실패 (HTTP {resp.status_code})"
-        except Exception as e:
-            return False, f"OpenRouter 연결 실패: {e}"
-
-
-def call_gemini_api(api_key: str, system_prompt: str, user_prompt: str) -> Optional[str]:
-    """Call Google Gemini Flash REST API with zero external dependencies."""
-    combined_prompt = f"{system_prompt}\n\n[입력 텍스트]\n{user_prompt}"
-    models = ["gemini-2.5-flash", "gemini-1.5-flash"]
-    headers = {"Content-Type": "application/json"}
-    for mod in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
-        payload = {
-            "contents": [{"parts": [{"text": combined_prompt}]}],
-            "generationConfig": {
-                "temperature": 0.2,
-                "maxOutputTokens": 3000,
-            },
-        }
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=25)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts:
-                        text = parts[0].get("text", "")
-                        cleaned = clean_ai_summary(text)
-                        if cleaned and len(cleaned) >= 20:
-                            logger.info(f"[AISummarizer] Successfully generated briefing using Google Gemini ({mod})")
-                            return cleaned
-            else:
-                logger.warning(f"Google Gemini ({mod}) returned HTTP {resp.status_code}: {resp.text[:150]}")
-        except Exception as e:
-            logger.error(f"Google Gemini call error on {mod}: {e}")
-    return None
+    url = "https://openrouter.ai/api/v1/auth/key"
+    headers = {"Authorization": f"Bearer {key}"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json().get("data", {})
+            label = data.get("label", "OpenRouter Key")
+            return True, f"OpenRouter 정상 인증 🟢 ({label})"
+        elif resp.status_code == 401:
+            return False, "OpenRouter 401 Unauthorized: API 키가 올바른지 확인해주세요."
+        else:
+            # For 429 or other non-401 status, do not block the key
+            return True, f"OpenRouter 키 확인 (HTTP {resp.status_code})"
+    except Exception as e:
+        # On network failure, do not block
+        return True, f"OpenRouter 키 형식 확인 (연결 대기: {e})"
 
 
 class AISummarizer:
@@ -361,8 +342,7 @@ class AISummarizer:
         key = (api_key or get_env_api_key()).strip()
         self.selector = OpenRouterModelSelector(api_key=key, eval_interval_seconds=3600)
         self.last_error: Optional[str] = None
-        if key and not key.startswith("AIzaSy"):
-            self.selector.start_hourly_loop()
+        self.selector.start_hourly_loop()
 
     @property
     def api_key(self) -> str:
@@ -371,30 +351,21 @@ class AISummarizer:
     def update_api_key(self, api_key: str):
         self.selector.set_api_key(api_key)
         self.last_error = None
-        if api_key and not api_key.startswith("AIzaSy"):
-            self.selector.start_hourly_loop()
+        self.selector.start_hourly_loop()
 
     def validate_current_key(self) -> Tuple[bool, str]:
         return validate_api_key(self.api_key)
 
     def get_active_model(self) -> str:
-        if self.api_key.startswith("AIzaSy"):
-            return "google/gemini-2.5-flash"
         return self.selector.get_active_model()
 
     def get_status(self) -> Dict[str, Any]:
         status = self.selector.get_status()
-        if self.api_key.startswith("AIzaSy"):
-            status["active_model"] = "google/gemini-2.5-flash"
-            status["provider"] = "Google Gemini"
-        else:
-            status["provider"] = "OpenRouter"
+        status["provider"] = "OpenRouter"
         status["last_error"] = self.last_error
         return status
 
     def force_evaluate(self) -> str:
-        if self.api_key.startswith("AIzaSy"):
-            return "google/gemini-2.5-flash"
         return self.selector.evaluate_and_select()
 
     def summarize_tweet(self, author: str, username: str, text: str) -> Optional[str]:
@@ -410,13 +381,12 @@ class AISummarizer:
 
     def summarize(self, title: str, content: str, category: str = "") -> Optional[str]:
         """
-        Summarize tweet, news, or ArXiv paper into a rich conversational briefing.
-        Supports both Google Gemini and OpenRouter free models.
+        Summarize tweet, news, or ArXiv paper into a rich conversational briefing using OpenRouter free models.
         """
         curr_key = self.api_key or get_env_api_key()
         if not curr_key or curr_key.startswith("YOUR_"):
-            logger.warning("[AISummarizer] Cannot summarize: API key is not configured.")
-            self.last_error = "API 키 미설정"
+            logger.warning("[AISummarizer] Cannot summarize: OpenRouter API key is not configured.")
+            self.last_error = "OpenRouter API 키 미설정"
             return None
 
         # Ensure selector has key
@@ -426,42 +396,30 @@ class AISummarizer:
         # Prepare context
         clean_content = (content or "").strip()
         if clean_content and clean_content != title.strip() and len(clean_content) > 30:
-            body_text = f"제목/화자: {title}\n원문 내용:\n{clean_content}"
+            body_text = f"제목/출처: {title}\n원문 내용:\n{clean_content}"
         else:
             body_text = f"제목 및 내용: {title}\n{clean_content}"
 
         system_prompt = (
-            "너는 최고위 의사결정권자(경영진·투자자)에게 핵심 인텔리전스를 1:1로 직접 구두 보고하는 전담 수석 분석관이다.\n"
-            "영문 또는 국문 뉴스, 트윗, 기술 논문의 중요 정보(구체적 사실, 배경, 핵심 인물/기업, 주요 수치, 산업·정책적 파급효과)가 일체 소실되지 않도록, "
-            "글자 수 제한을 의식하지 말고 충분히 깊이 있고 상세하게 정중한 한국어 구어체 브리핑 형식(~했습니다, ~상황입니다, ~전망됩니다)으로 설명하라.\n\n"
-            "[작성 원칙]\n"
-            "1. 절대 서론 인사('안녕하세요', '브리핑입니다' 등)나 맺음말, 분석 과정(Thinking process), 메타 발언을 쓰지 마라. 바로 본론으로 시작하라.\n"
-            "2. 마크다운 기호(**, #, 따옴표 등)나 인위적인 대괄호([], '• 핵심:' 등의 인위적 태그)를 쓰지 마라.\n"
-            "3. 2~4개의 정갈한 문단으로 구성하되, 각 문단은 자연스러운 구어체 완결 문장으로 상세히 작성하라:\n"
-            "   - 첫째 문단: 사건 또는 발언/기술의 가장 핵심적인 사실과 본질을 명확하고 완성도 높게 설명.\n"
-            "   - 중간 문단들: 구체적 발생 배경, 관련 기업/인물, 수치 및 세부 진행 경과를 누락 없이 상세히 설명.\n"
-            "   - 마지막 문단: 시장, 정책, 산업 생태계에 미칠 파급효과 및 주요 시사점을 전망.\n"
-            "4. 중간에 문장이 끊기거나 중요한 팩트가 생략되지 않도록 끝까지 완결된 문장으로 작성하라."
+            "너는 최고위 의사결정권자(경영진·투자자)에게 실시간 인텔리전스를 1:1로 직접 구두 보고하는 전담 수석 분석관이다.\n"
+            "영문 또는 국문 원문의 모든 중요 사실, 배경, 핵심 인물/기업, 구체적 수치, 향후 시장·산업·정책적 파급효과를 절대로 누락하지 말고, "
+            "글자 수 제한 없이 충분히 깊이 있고 상세하게 100% 정중한 한국어 구어체(~했습니다, ~상황입니다, ~전망됩니다) 완결 문장으로 브리핑하라.\n\n"
+            "[작성 수칙 - 엄격 준수]\n"
+            "1. 반드시 순수 한국어로만 작성하라. 영어 원문이더라도 완벽한 한국어로 번역 및 재해석하여 설명하라.\n"
+            "2. 서론 인사('안녕하세요', '브리핑입니다' 등)나 맺음말, 분석 과정(Thinking process, CoT), 메타 발언을 일체 쓰지 말고 본론 브리핑 문장으로 즉시 시작하라.\n"
+            "3. 마크다운 기호(**, #, 따옴표)나 인위적인 불릿 머리말(•, [핵심] 등)을 쓰지 말고, 2~4개의 단락으로 자연스럽게 나누어 작성하라:\n"
+            "   - 단락 1: 사건/발언/연구의 가장 핵심적인 사실과 본질을 명확하고 완성도 높게 브리핑.\n"
+            "   - 단락 2: 구체적 발생 배경, 관련 기업/인물, 수치 및 세부 진행 경과를 상세히 설명.\n"
+            "   - 단락 3: 시장, 정책, 산업 생태계에 미칠 파급효과 및 주요 시사점을 전망.\n"
+            "4. 중간에 문장이 끊기지 않도록 끝까지 완결된 문장으로 작성하라."
         )
 
         user_prompt = (
-            f"분야: {category}\n"
+            f"[수집 분야: {category}]\n"
             f"{body_text}\n\n"
-            "위 내용을 바탕으로 중요 정보나 구체적 수치가 누락되지 않도록 충분히 상세하고 깊이 있는 한국어 구어체 브리핑으로 작성해줘.\n"
-            "인사말이나 인위적인 불릿 태그 없이 바로 본론 브리핑을 시작해줘."
+            "위 내용의 핵심 팩트와 수치가 누락되지 않도록 상세하고 깊이 있는 한국어 구어체 완결 문단 브리핑으로 작성해주세요. 인사말 없이 바로 브리핑을 시작하세요."
         )
 
-        # 1. Google Gemini Provider
-        if curr_key.startswith("AIzaSy"):
-            res = call_gemini_api(curr_key, system_prompt, user_prompt)
-            if res:
-                self.last_error = None
-                return res
-            else:
-                self.last_error = "Google Gemini 호출 실패"
-                return None
-
-        # 2. OpenRouter Provider
         headers = {
             "Authorization": f"Bearer {curr_key}",
             "HTTP-Referer": "https://github.com/DONGJUN92/hyperalertfeedbot",
@@ -478,23 +436,26 @@ class AISummarizer:
                     attempt_models.append(cid)
 
         reliable_fallbacks = [
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "google/gemma-2-9b-it:free",
+            "google/gemma-4-31b-it:free",
+            "google/gemma-4-26b-a4b-it:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
             "nvidia/nemotron-3.5-lightning:free",
+            "inclusionai/ling-3.0-flash-fin:free",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
             DEFAULT_FALLBACK_MODEL,
         ]
         for fb in reliable_fallbacks:
             if fb not in attempt_models:
                 attempt_models.append(fb)
 
-        for mod in attempt_models[:4]:
+        for mod in attempt_models[:5]:
             payload = {
                 "model": mod,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "temperature": 0.1,
+                "temperature": 0.2,
                 "max_tokens": 3000,
             }
             try:
@@ -510,9 +471,9 @@ class AISummarizer:
                             self.last_error = None
                             return cleaned_text
                 elif resp.status_code == 401:
-                    logger.warning(f"OpenRouter ({mod}) returned HTTP 401: User not found / Invalid API key.")
-                    self.last_error = "OpenRouter 401: User not found (계정 미존재 또는 키 만료)"
-                    break  # 401 means the key itself is dead, trying other models won't help
+                    logger.warning(f"OpenRouter ({mod}) returned HTTP 401: Invalid API key.")
+                    self.last_error = "OpenRouter HTTP 401: 인증 실패"
+                    break
                 else:
                     logger.warning(f"OpenRouter ({mod}) returned HTTP {resp.status_code}: {resp.text[:200]}")
                     self.last_error = f"OpenRouter HTTP {resp.status_code}"
