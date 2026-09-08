@@ -2,16 +2,17 @@ import http.server
 import json
 import logging
 import os
+import re
 import socketserver
 import sys
 import threading
 import time
 import urllib.parse
 import requests
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from scraper import fetch_latest_tweets
-from notifier import Notifier
+from notifier import Notifier, CELEBRITY_BADGES
 from summarizer import AISummarizer, get_env_api_key
 from news_collector import (
     fetch_all_curated_news,
@@ -27,6 +28,24 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("x_bot")
+
+
+def extract_x_username(input_str: str) -> str:
+    """Extract clean X/Twitter handle from URL, @mention, or raw username."""
+    if not input_str:
+        return ""
+    s = input_str.strip()
+    url_pattern = r"(?:https?:\/\/)?(?:www\.|mobile\.)?(?:x\.com|twitter\.com)\/([A-Za-z0-9_]{1,30})"
+    match = re.search(url_pattern, s, re.IGNORECASE)
+    if match:
+        user = match.group(1).lower()
+        if user in ("home", "explore", "notifications", "messages", "i", "search", "settings", "help"):
+            return ""
+        return user
+    clean = s.lstrip("@").strip()
+    if re.match(r"^[A-Za-z0-9_]{1,30}$", clean):
+        return clean.lower()
+    return ""
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 START_TIME = time.time()
@@ -117,7 +136,7 @@ class ConfigManager:
 
         env_users = os.environ.get("MONITORED_USERS")
         if env_users:
-            users = [u.strip().lstrip("@") for u in env_users.split(",") if u.strip()]
+            users = [extract_x_username(u) for u in env_users.split(",") if extract_x_username(u)]
             if users:
                 self.config["monitored_users"] = users
 
@@ -161,17 +180,21 @@ class ConfigManager:
         self.config[key] = value
         self.save()
 
-    def add_user(self, username: str) -> bool:
-        username = username.strip().lstrip("@").lower()
+    def add_user(self, input_str: str) -> bool:
+        username = extract_x_username(input_str)
+        if not username:
+            return False
         users = [u.lower() for u in self.config.get("monitored_users", [])]
-        if username and username not in users:
+        if username not in users:
             self.config.setdefault("monitored_users", []).append(username)
             self.save()
             return True
         return False
 
-    def remove_user(self, username: str) -> bool:
-        username = username.strip().lstrip("@").lower()
+    def remove_user(self, input_str: str) -> bool:
+        username = extract_x_username(input_str)
+        if not username:
+            return False
         users = self.config.get("monitored_users", [])
         original_len = len(users)
         self.config["monitored_users"] = [u for u in users if u.lower() != username]
@@ -465,6 +488,32 @@ class TwitterTelegramBot:
             )
             return
 
+        # Convenience: Allow user to paste X / Twitter profile or post link directly into chat
+        if not clean_text.startswith("/") and ("x.com" in clean_text.lower() or "twitter.com" in clean_text.lower()):
+            extracted = extract_x_username(clean_text)
+            if extracted:
+                current_users = [u.lower() for u in self.config_mgr.get("monitored_users", [])]
+                if extracted in current_users:
+                    self.notifier.send_telegram_message(
+                        f"ℹ️ <b>이미 모니터링 중인 X 링크입니다.</b>\n\n"
+                        f"• 계정: <b>@{extracted}</b>\n"
+                        f"• 링크: https://x.com/{extracted}\n\n"
+                        f"💡 모니터링 해제: <code>/del_link {extracted}</code>"
+                    )
+                else:
+                    self.config_mgr.add_user(extracted)
+                    badge_info = CELEBRITY_BADGES.get(extracted)
+                    desc_str = f" ({badge_info[0]} - {badge_info[1]})" if badge_info else ""
+                    self.notifier.send_telegram_message(
+                        f"🔗 <b>X(트위터) 링크 감지! 모니터링 대상에 추가되었습니다.</b>\n\n"
+                        f"• 계정: <b>@{extracted}</b>{desc_str}\n"
+                        f"• 프로필: https://x.com/{extracted}\n\n"
+                        f"지금부터 새 트윗이 게시되면 실시간 AI 브리핑을 보내드립니다.\n"
+                        f"• 전체 링크 목록: <code>/links</code>\n"
+                        f"• 링크 삭제: <code>/del_link {extracted}</code>"
+                    )
+                return
+
         parts = text.split(maxsplit=1)
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -474,17 +523,19 @@ class TwitterTelegramBot:
                 "🏛️ <b>Alpha Intelligence Feed 터미널 안내</b>\n\n"
                 "📋 <b>상태 및 점검</b>\n"
                 "• <code>/list</code> : 감시 계정, 키워드, AI 요약 설정 조회\n"
+                "• <code>/links</code> : 현재 연결된 X(트위터) 모니터링 링크 전체 조회\n"
                 "• <code>/celebs</code> : 등록된 VIP 오피니언 리더 확인\n"
                 "• <code>/status</code> : 봇 작동 상태 및 Uptime 확인\n"
                 "• <code>/test</code> 또는 <code>/check</code> : 모든 소스에서 최신 원문 1건씩 즉시 실시간 수신 점검\n\n"
+                "🔗 <b>X(트위터) 연결 링크 관리</b>\n"
+                "• <code>/add_link &lt;URL|아이디&gt;</code> : X 링크/계정 추가 (채팅창에 URL 바로 전송해도 자동 등록!)\n"
+                "• <code>/del_link &lt;URL|아이디&gt;</code> : X 링크/계정 모니터링 해제\n"
+                "• <code>/add_user</code>, <code>/del_user</code> : 기존 아이디 전용 명령어도 계속 지원\n\n"
                 "🤖 <b>OpenRouter 무료 모델 자동 AI 3줄 요약</b>\n"
                 "• <code>/openrouter &lt;API_KEY&gt;</code> : OpenRouter API 키 등록 (키만 바로 전송해도 자동 인식)\n"
                 "• <code>/models</code> : 현재 선정된 활성 모델 및 1시간 주기 평가 현황 확인\n"
                 "• <code>/eval_models</code> : 지금 즉시 무료 모델 핑 테스트 및 최적 모델 재평가\n"
                 "• <code>/openrouter clear</code> : 키 삭제 (기본 발췌 모드로 복귀)\n\n"
-                "👤 <b>계정 관리</b>\n"
-                "• <code>/add_user &lt;아이디&gt;</code> : 감시할 X 계정 추가\n"
-                "• <code>/del_user &lt;아이디&gt;</code> : 감시 계정 제거\n\n"
                 "🎯 <b>키워드 관리 (긴급 핀/사이렌 알림)</b>\n"
                 "• <code>/add_keyword &lt;단어&gt;</code> : 긴급 키워드 추가 (예: <code>/add_keyword 상법</code>)\n"
                 "• <code>/del_keyword &lt;단어&gt;</code> : 긴급 키워드 제거\n\n"
@@ -500,10 +551,14 @@ class TwitterTelegramBot:
             reply = (
                 "🌟 <b>현재 등록된 VIP 글로벌 오피니언 리더</b>\n\n"
                 "• 🤖 <b>@thsottiaux</b> : Tibo (Astra & AI 인프라 리더)\n"
+                "  🔗 https://x.com/thsottiaux\n"
                 "• 🧠 <b>@sama</b> : Sam Altman (OpenAI CEO)\n"
+                "  🔗 https://x.com/sama\n"
                 "• ⚡ <b>@elonmusk</b> : Elon Musk (Tesla, xAI, X)\n"
-                "• 🏛️ <b>@realDonaldTrump</b> : Donald J. Trump (미국 정책 & 글로벌 거시)\n\n"
-                "추가 계정 등록은 <code>/add_user &lt;아이디&gt;</code> 명령어로 가능합니다."
+                "  🔗 https://x.com/elonmusk\n"
+                "• 🏛️ <b>@realDonaldTrump</b> : Donald J. Trump (미국 정책 & 글로벌 거시)\n"
+                "  🔗 https://x.com/realDonaldTrump\n\n"
+                "추가 링크 등록: <code>/add_link &lt;URL|아이디&gt;</code> (또는 프로필 URL 바로 전송)"
             )
             self.notifier.send_telegram_message(reply)
 
@@ -527,7 +582,7 @@ class TwitterTelegramBot:
             latency = status_info.get("latency_seconds", 0.0)
             ai_display = f"OpenRouter [{active_model}] ({latency}s) 🟢" if has_ai else "미연동 (기본 발췌) ⚪"
 
-            u_list = "\n".join([f"  • @{u}" for u in users]) if users else "  (없음)"
+            u_list = "\n".join([f"  • @{u} (https://x.com/{u})" for u in users]) if users else "  (없음)"
             k_list = "\n".join([f"  • <b>{k}</b>" for k in keywords]) if keywords else "  (없음)"
 
             reply = (
@@ -541,23 +596,104 @@ class TwitterTelegramBot:
             )
             self.notifier.send_telegram_message(reply)
 
-        elif cmd == "/add_user":
-            if not arg:
-                self.notifier.send_telegram_message("❌ 계정 아이디를 입력해주세요.\n예: <code>/add_user sama</code>")
-                return
-            if self.config_mgr.add_user(arg):
-                self.notifier.send_telegram_message(f"✅ @{arg.lstrip('@')} 계정이 모니터링 목록에 추가되었습니다!")
+        elif cmd in ["/links", "/x_links", "/x_list"]:
+            users = self.config_mgr.get("monitored_users", [])
+            if not users:
+                self.notifier.send_telegram_message(
+                    "ℹ️ 현재 등록된 X(트위터) 모니터링 링크가 없습니다.\n\n"
+                    "<code>/add_link &lt;URL&gt;</code> 명령어로 프로필 링크를 추가해보세요!"
+                )
             else:
-                self.notifier.send_telegram_message("ℹ️ 이미 등록되어 있거나 유효하지 않은 계정입니다.")
+                lines = [
+                    f"🔗 <b>연결된 X(트위터) 모니터링 링크 목록 ({len(users)}개)</b>\n",
+                    "새 트윗이 감지되면 즉시 수집하여 AI 브리핑을 전달합니다.\n",
+                ]
+                for idx, u in enumerate(users, 1):
+                    u_lower = u.lower()
+                    badge_info = CELEBRITY_BADGES.get(u_lower)
+                    if badge_info:
+                        icon_topic, name = badge_info
+                        lines.append(f"{idx}. {icon_topic} <b>{name}</b> (<code>@{u}</code>)")
+                    else:
+                        lines.append(f"{idx}. 👤 <b>@{u}</b>")
+                    lines.append(f"   🔗 https://x.com/{u}\n")
 
-        elif cmd == "/del_user":
+                lines.append(
+                    "💡 <b>링크 관리 명령어:</b>\n"
+                    "• 링크 추가: <code>/add_link &lt;URL|아이디&gt;</code> (채팅창에 URL 바로 전송 가능)\n"
+                    "• 링크 삭제: <code>/del_link &lt;URL|아이디&gt;</code>"
+                )
+                self.notifier.send_telegram_message("\n".join(lines))
+
+        elif cmd in ["/add_link", "/add_x", "/add_user"]:
             if not arg:
-                self.notifier.send_telegram_message("❌ 제거할 계정 아이디를 입력해주세요.\n예: <code>/del_user sama</code>")
+                self.notifier.send_telegram_message(
+                    "❌ 추가할 X(트위터) 링크 또는 계정 아이디를 입력해주세요.\n\n"
+                    "• URL 예시: <code>/add_link https://x.com/vitalikbuterin</code>\n"
+                    "• 아이디 예시: <code>/add_link vitalikbuterin</code>\n"
+                    "*(채팅창에 프로필 URL을 바로 붙여넣어도 자동 등록됩니다)*"
+                )
                 return
-            if self.config_mgr.remove_user(arg):
-                self.notifier.send_telegram_message(f"🗑️ @{arg.lstrip('@')} 계정이 목록에서 제거되었습니다.")
+
+            target_user = extract_x_username(arg)
+            if not target_user:
+                self.notifier.send_telegram_message(
+                    "❌ 유효한 X(트위터) 링크 또는 아이디 형식이 아닙니다.\n"
+                    "예: <code>https://x.com/sama</code> 또는 <code>sama</code>"
+                )
+                return
+
+            current_users = [u.lower() for u in self.config_mgr.get("monitored_users", [])]
+            if target_user in current_users:
+                self.notifier.send_telegram_message(
+                    f"ℹ️ 이미 모니터링 중인 X 링크/계정입니다.\n\n"
+                    f"• 계정: <b>@{target_user}</b>\n"
+                    f"• 링크: https://x.com/{target_user}"
+                )
+                return
+
+            if self.config_mgr.add_user(target_user):
+                badge_info = CELEBRITY_BADGES.get(target_user)
+                desc_str = f" ({badge_info[0]} - {badge_info[1]})" if badge_info else ""
+                self.notifier.send_telegram_message(
+                    f"✅ <b>X(트위터) 모니터링 링크 추가 완료!</b>\n\n"
+                    f"• 계정: <b>@{target_user}</b>{desc_str}\n"
+                    f"• 링크: https://x.com/{target_user}\n\n"
+                    f"새 트윗이 올라오면 실시간 AI 브리핑과 함께 전송됩니다.\n"
+                    f"(목록: <code>/links</code>, 삭제: <code>/del_link {target_user}</code>)"
+                )
             else:
-                self.notifier.send_telegram_message("ℹ️ 해당 계정이 목록에 없습니다.")
+                self.notifier.send_telegram_message("❌ 계정 추가 중 오류가 발생했습니다.")
+
+        elif cmd in ["/del_link", "/del_x", "/del_user", "/remove_link"]:
+            if not arg:
+                self.notifier.send_telegram_message(
+                    "❌ 제거할 X(트위터) 링크 또는 계정 아이디를 입력해주세요.\n\n"
+                    "• URL 예시: <code>/del_link https://x.com/vitalikbuterin</code>\n"
+                    "• 아이디 예시: <code>/del_link vitalikbuterin</code>"
+                )
+                return
+
+            target_user = extract_x_username(arg)
+            if not target_user:
+                self.notifier.send_telegram_message(
+                    "❌ 유효한 X(트위터) 링크 또는 아이디 형식이 아닙니다.\n"
+                    "예: <code>https://x.com/sama</code> 또는 <code>sama</code>"
+                )
+                return
+
+            if self.config_mgr.remove_user(target_user):
+                self.notifier.send_telegram_message(
+                    f"🗑️ <b>X(트위터) 모니터링 링크 제거 완료</b>\n\n"
+                    f"• 계정: <b>@{target_user}</b>\n"
+                    f"• 링크: https://x.com/{target_user}\n\n"
+                    f"모니터링 대상에서 제외되었습니다. (목록 확인: <code>/links</code>)"
+                )
+            else:
+                self.notifier.send_telegram_message(
+                    f"ℹ️ 모니터링 목록에 등록되어 있지 않은 계정입니다: <b>@{target_user}</b>\n"
+                    f"(현재 목록 확인: <code>/links</code>)"
+                )
 
         elif cmd == "/add_keyword":
             if not arg:

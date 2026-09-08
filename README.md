@@ -40,6 +40,9 @@
 
 | 명령어 | 설명 | 예시 |
 |---|---|---|
+| `/links` | 연결된 X(트위터) 모니터링 링크 전체 조회 | `/links` |
+| `/add_link <URL|아이디>` | 감시할 X 링크 추가 *(채팅창에 URL 바로 전송해도 자동 등록)* | `/add_link https://x.com/vitalikbuterin` |
+| `/del_link <URL|아이디>` | 감시 중인 X 링크 제거 | `/del_link https://x.com/vitalikbuterin` |
 | `/celebs` | 현재 감시 중인 VIP 리더 목록 및 분야 확인 | `/celebs` |
 | `/list` | 감시 계정, 긴급 키워드, AI 요약, 뉴스 피드 상태 확인 | `/list` |
 | `/openrouter <API_KEY>` | OpenRouter API 키 등록 (키만 바로 전송해도 자동 인식) | `/openrouter sk-or-...` |
@@ -47,8 +50,8 @@
 | `/eval_models` | 지금 즉시 OpenRouter 무료 모델 라이브 핑 및 최적 모델 재평가 | `/eval_models` |
 | `/news_toggle` | IT/경제 정책 1차 뉴스 피드 ON / OFF 전환 | `/news_toggle` |
 | `/test` (또는 `/check`) | 모든 7개 소스에서 최신 원문 1건씩 즉시 실시간 수신 점검 | `/test` |
-| `/add_user <계정>` | 감시할 X 계정 추가 | `/add_user vitalikbuterin` |
-| `/del_user <계정>` | 감시 계정 제거 | `/del_user thsottiaux` |
+| `/add_user <계정>` | 감시할 X 계정 추가 (URL/아이디 모두 지원) | `/add_user vitalikbuterin` |
+| `/del_user <계정>` | 감시 계정 제거 (URL/아이디 모두 지원) | `/del_user thsottiaux` |
 | `/add_keyword <단어>` | 긴급 사이렌 키워드 추가 | `/add_keyword 관세` |
 | `/del_keyword <단어>` | 긴급 키워드 제거 | `/del_keyword 관세` |
 | `/status` | 봇 업타임, AI 엔진, 누적 트윗/뉴스 기록 수 확인 | `/status` |
