@@ -1,0 +1,26 @@
+{
+  "bot_token": "YOUR_TELEGRAM_BOT_TOKEN_HERE",
+  "chat_id": "YOUR_TELEGRAM_CHAT_ID_HERE",
+  "monitored_users": [
+    "thsottiaux",
+    "sama",
+    "elonmusk",
+    "realDonaldTrump"
+  ],
+  "priority_keywords": [
+    "reset",
+    "상법",
+    "자본시장",
+    "반독점",
+    "tariff",
+    "sec",
+    "openai",
+    "gpt"
+  ],
+  "check_interval_seconds": 30,
+  "enable_news_feed": true,
+  "news_check_interval_seconds": 300,
+  "ntfy_topic": "",
+  "seen_tweet_ids": [],
+  "seen_news_ids": []
+}

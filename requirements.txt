@@ -1,0 +1,4 @@
+# Pure Python implementation using standard libraries
+# (urllib, json, re, threading, http.server)
+# Optional packages for stability if needed:
+requests>=2.31.0

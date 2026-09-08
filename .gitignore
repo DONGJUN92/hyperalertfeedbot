@@ -1,0 +1,15 @@
+# Sensitive credentials (never commit to git!)
+config.json
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
