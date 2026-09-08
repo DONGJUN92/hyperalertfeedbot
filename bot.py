@@ -12,7 +12,7 @@ from typing import Dict, Any, List
 
 from scraper import fetch_latest_tweets
 from notifier import Notifier
-from summarizer import AISummarizer
+from summarizer import AISummarizer, get_env_api_key
 from news_collector import (
     fetch_all_curated_news,
     fetch_korea_policy_news,
@@ -142,7 +142,7 @@ class ConfigManager:
         if env_ntfy is not None:
             self.config["ntfy_topic"] = env_ntfy.strip()
 
-        env_or = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        env_or = get_env_api_key()
         if env_or:
             self.config["openrouter_api_key"] = env_or.strip()
 
@@ -345,9 +345,15 @@ class TwitterTelegramBot:
     def run_live_test_thread(self):
         """Fetch and deliver the single most recent item from every live source."""
         try:
+            has_ai = bool(self.summarizer.api_key)
+            active_m = self.summarizer.selector.get_active_model()
+            ai_badge = f"가동 중 🟢 (모델: <code>{active_m}</code>)" if has_ai else "미설정 ⚪ (원문 발췌로 발송)"
+
             self.notifier.send_telegram_message(
-                "🔍 <b>[라이브 테스트 가동]</b>\n"
-                "모든 소스(VIP 트위터 4인 + 정책·상법 뉴스 + 긱뉴스 + AI 논문 + 테크 속보)에서 <b>가장 최근 원문 1건씩</b>을 실시간으로 가져옵니다...\n"
+                "🔍 <b>[라이브 테스트 가동]</b>\n\n"
+                f"• <b>AI 구어체 브리핑:</b> {ai_badge}\n"
+                "• <b>수집 채널:</b> VIP 4인 + 정책·상법 + 긱뉴스 + AI 논문 + 테크 속보\n\n"
+                "가장 최근 원문 1건씩을 실시간으로 가져옵니다...\n"
                 "<i>(약 10~15초 소요됩니다)</i>"
             )
 

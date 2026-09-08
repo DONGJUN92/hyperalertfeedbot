@@ -277,9 +277,22 @@ def clean_ai_summary(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", cleaned)
 
 
+def get_env_api_key() -> str:
+    """Auto-detect OpenRouter API key across environment variable name variations."""
+    for k in ["OPENROUTER_API_KEY", "OPENROUTER_KEY", "OPEN_ROUTER_API_KEY", "OPEN_ROUTER_KEY", "OR_API_KEY", "GEMINI_API_KEY"]:
+        val = os.environ.get(k)
+        if val and val.strip() and not val.startswith("YOUR_"):
+            return val.strip()
+    for k, v in os.environ.items():
+        if "openrouter" in k.lower() and "key" in k.lower():
+            if v and v.strip() and not v.startswith("YOUR_"):
+                return v.strip()
+    return ""
+
+
 class AISummarizer:
     def __init__(self, api_key: Optional[str] = None):
-        key = (api_key or os.environ.get("OPENROUTER_API_KEY", "")).strip()
+        key = (api_key or get_env_api_key()).strip()
         self.selector = OpenRouterModelSelector(api_key=key, eval_interval_seconds=3600)
         self.selector.start_hourly_loop()
 
@@ -301,8 +314,14 @@ class AISummarizer:
         Summarize news article or ArXiv paper into a rich conversational briefing using OpenRouter.
         Returns formatted string for Telegram or None if fallback needed.
         """
-        if not self.api_key or self.api_key.startswith("YOUR_"):
+        curr_key = self.api_key or get_env_api_key()
+        if not curr_key or curr_key.startswith("YOUR_"):
+            logger.warning("[AISummarizer] Cannot summarize: API key is not configured.")
             return None
+
+        # Ensure selector has key
+        if not self.selector.api_key and curr_key:
+            self.selector.set_api_key(curr_key)
 
         # Prepare context
         clean_content = (content or "").strip()
@@ -333,19 +352,32 @@ class AISummarizer:
         )
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {curr_key}",
             "HTTP-Referer": "https://github.com/DONGJUN92/hyperalertfeedbot",
             "X-Title": "Alpha Intelligence Feed Bot",
             "Content-Type": "application/json",
         }
 
-        # Try active model first, then fallback to openrouter/free if failed
+        # Try active model first, then add verified candidates and fallbacks
         active_model = self.selector.get_active_model()
         attempt_models = [active_model]
-        if DEFAULT_FALLBACK_MODEL not in attempt_models:
-            attempt_models.append(DEFAULT_FALLBACK_MODEL)
+        with self.selector.lock:
+            for c in self.selector.candidate_summary:
+                cid = c.get("id")
+                if cid and cid not in attempt_models:
+                    attempt_models.append(cid)
 
-        for mod in attempt_models:
+        reliable_fallbacks = [
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "google/gemma-2-9b-it:free",
+            "nvidia/nemotron-3.5-lightning:free",
+            DEFAULT_FALLBACK_MODEL,
+        ]
+        for fb in reliable_fallbacks:
+            if fb not in attempt_models:
+                attempt_models.append(fb)
+
+        for mod in attempt_models[:4]:
             payload = {
                 "model": mod,
                 "messages": [
@@ -354,7 +386,6 @@ class AISummarizer:
                 ],
                 "temperature": 0.1,
                 "max_tokens": 3000,
-                "include_reasoning": False,
             }
             try:
                 resp = requests.post(OPENROUTER_CHAT_URL, json=payload, headers=headers, timeout=25)
@@ -364,7 +395,8 @@ class AISummarizer:
                     if choices:
                         raw_text = choices[0].get("message", {}).get("content", "").strip()
                         cleaned_text = clean_ai_summary(raw_text)
-                        if cleaned_text and len(cleaned_text.split("\n")) >= 2:
+                        if cleaned_text and len(cleaned_text) >= 20:
+                            logger.info(f"[AISummarizer] Successfully generated briefing using {mod} ({len(cleaned_text)} chars)")
                             return cleaned_text
                 else:
                     logger.warning(f"OpenRouter ({mod}) returned HTTP {resp.status_code}: {resp.text[:200]}")
