@@ -652,10 +652,13 @@ class TwitterTelegramBot:
             last_eval = status_info.get("last_evaluated_at")
             candidates = status_info.get("candidates", [])
 
+            has_key = bool(self.summarizer.api_key)
+            masked_k = f"<code>{self.summarizer.api_key[:8]}...{self.summarizer.api_key[-4:]}</code>" if has_key else "미설정 ⚪"
             last_eval_str = time.strftime("%H:%M:%S", time.localtime(last_eval)) if last_eval else "평가 진행 중"
 
             lines = [
                 "🤖 <b>OpenRouter 무료(:free) 모델 실시간 평가 현황</b>\n",
+                f"• <b>API 키 연동:</b> {'정상 등록 🟢 ' + masked_k if has_key else '미등록 ⚪'}",
                 f"⭐️ <b>현재 선정된 활성 모델:</b>\n<code>{active_model}</code>",
                 f"• 최근 응답 지연시간: <b>{latency}s</b>",
                 f"• 최근 평가 시각: <b>{last_eval_str}</b> (1시간 주기 자동 갱신)\n",
