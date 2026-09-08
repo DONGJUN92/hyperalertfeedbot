@@ -27,8 +27,8 @@ class Notifier:
         self.chat_id = chat_id
         self.ntfy_topic = ntfy_topic.strip() if ntfy_topic else ""
 
-    def send_telegram_message(self, text: str, disable_notification: bool = False) -> Optional[int]:
-        """Send a message via Telegram bot. Returns message_id if successful."""
+    def send_telegram_message(self, text: str, disable_notification: bool = False, max_retries: int = 3) -> Optional[int]:
+        """Send a message via Telegram bot with automatic retries. Returns message_id if successful."""
         if not self.bot_token or self.bot_token.startswith("YOUR_"):
             logger.warning("Telegram bot_token is not configured yet.")
             return None
@@ -45,18 +45,22 @@ class Notifier:
             "disable_notification": disable_notification,
         }
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                res_data = json.loads(resp.read().decode("utf-8"))
-                if res_data.get("ok"):
-                    return res_data["result"]["message_id"]
-                else:
-                    logger.error(f"Telegram API error: {res_data}")
-        except Exception as e:
-            logger.error(f"Failed to send Telegram message: {e}")
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                req = urllib.request.Request(
+                    url, data=data, headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    res_data = json.loads(resp.read().decode("utf-8"))
+                    if res_data.get("ok"):
+                        return res_data["result"]["message_id"]
+                    else:
+                        logger.error(f"Telegram API error (Attempt {attempt}): {res_data}")
+            except Exception as e:
+                logger.warning(f"Telegram send failed (Attempt {attempt}/{max_retries}): {e}")
+                if attempt < max_retries:
+                    time.sleep(2.5 * attempt)  # Exponential backoff
         return None
 
     def pin_telegram_message(self, message_id: int):
