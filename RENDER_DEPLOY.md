@@ -63,7 +63,7 @@ git push -u origin main
 |---|---|---|
 | `BOT_TOKEN` | `YOUR_TELEGRAM_BOT_TOKEN_HERE` | @BotFather에게서 발급받은 봇 토큰 (필수) |
 | `CHAT_ID` | `YOUR_TELEGRAM_CHAT_ID_HERE` | 본인의 텔레그램 Chat ID (숫자, 필수) |
-| `GEMINI_API_KEY` | *(선택 사항)* | [Google AI Studio](https://aistudio.google.com/app/apikey) 무료 API Key (뉴스/논문 무료 AI 3줄 요약용, 텔레그램에서 `/gemini <키>` 명령어로도 등록 가능) |
+| `OPENROUTER_API_KEY` | *(선택 사항)* | [OpenRouter](https://openrouter.ai/keys) API Key (무료 :free 모델 1시간 주기 자동 선정 3줄 요약용, 텔레그램에서 키를 채팅창에 바로 전송해도 등록 가능) |
 
 *(선택사항으로 `PRIORITY_KEYWORDS`나 `MONITORED_USERS`도 지정할 수 있으나, 기본값으로 머스크, 올트먼, 트럼프, 티보, 상법 등이 이미 내장되어 있습니다.)*
 

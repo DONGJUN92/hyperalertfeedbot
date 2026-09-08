@@ -21,7 +21,7 @@
 ### 3. 미니멀 블룸버그 터미널 타이포그래피 & AI 3줄 요약 ⭐️
 * **산만한 이모지 전면 배제**: 블룸버그/로이터 터미널 스타일의 정갈한 태그(`[POLICY/상법]`, `[AI RESEARCH]`, `[URGENT]`) 적용.
 * **인용구(`<blockquote>`) 블록**: 트윗 본문 및 기사 내용을 텔레그램 공식 인용 블록으로 감싸 한눈에 완벽히 분리 가독.
-* **Google Gemini Flash-Lite (`gemini-flash-lite-latest`) 무료 AI 3줄 요약**: 긴 뉴스나 영문 AI 논문을 '핵심 결론 / 세부 내용 / 시사점 및 영향' 3줄 불릿으로 한국어 즉시 요약.
+* **OpenRouter 무료(:free) 모델 1시간 주기 자동 선정 엔진**: OpenRouter의 무료 모델 중 호출 안정성과 성능이 가장 우수한 모델(Nemotron Ultra/Super, Gemma-4, Llama 3.3, Ling-Fin 등)을 1시간 주기로 자동 벤치마크/선정하여 3줄 요약 적용.
 * **트윗 정밀 파싱**: Pinned 배지 분리, 작성자명/시간 격리, 인용 트윗(`[인용: @핸들 · 시간]`) 구조화 및 하단 메트릭 숫자 완전 제거.
 
 ### 4. 초강력 차등 경보 (Siren & Pin)
@@ -41,7 +41,9 @@
 |---|---|---|
 | `/celebs` | 현재 감시 중인 VIP 리더 목록 및 분야 확인 | `/celebs` |
 | `/list` | 감시 계정, 긴급 키워드, AI 요약, 뉴스 피드 상태 확인 | `/list` |
-| `/gemini <API_KEY>` | Google Gemini Flash-Lite AI 3줄 요약 키 등록 및 관리 | `/gemini AIzaSy...` |
+| `/openrouter <API_KEY>` | OpenRouter API 키 등록 (키만 바로 전송해도 자동 인식) | `/openrouter sk-or-...` |
+| `/models` | 현재 선정된 활성 모델 및 상위 무료 모델 핑/평가 현황 확인 | `/models` |
+| `/eval_models` | 지금 즉시 OpenRouter 무료 모델 라이브 핑 및 최적 모델 재평가 | `/eval_models` |
 | `/news_toggle` | IT/경제 정책 1차 뉴스 피드 ON / OFF 전환 | `/news_toggle` |
 | `/test` (또는 `/check`) | 모든 7개 소스에서 최신 원문 1건씩 즉시 실시간 수신 점검 | `/test` |
 | `/add_user <계정>` | 감시할 X 계정 추가 | `/add_user vitalikbuterin` |

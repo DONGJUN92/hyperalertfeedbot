@@ -90,7 +90,7 @@ class ConfigManager:
                     "enable_news_feed": True,
                     "news_check_interval_seconds": 300,
                     "ntfy_topic": "",
-                    "gemini_api_key": "",
+                    "openrouter_api_key": "",
                     "seen_tweet_ids": [],
                     "seen_news_ids": [],
                 }
@@ -141,9 +141,9 @@ class ConfigManager:
         if env_ntfy is not None:
             self.config["ntfy_topic"] = env_ntfy.strip()
 
-        env_gemini = os.environ.get("GEMINI_API_KEY")
-        if env_gemini:
-            self.config["gemini_api_key"] = env_gemini.strip()
+        env_or = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        if env_or:
+            self.config["openrouter_api_key"] = env_or.strip()
 
     def save(self):
         with self.lock:
@@ -224,7 +224,7 @@ class ConfigManager:
 class TwitterTelegramBot:
     def __init__(self):
         self.config_mgr = ConfigManager()
-        self.summarizer = AISummarizer(api_key=self.config_mgr.get("gemini_api_key", ""))
+        self.summarizer = AISummarizer(api_key=self.config_mgr.get("openrouter_api_key", ""))
         self.notifier = Notifier(
             bot_token=self.config_mgr.get("bot_token", ""),
             chat_id=self.config_mgr.get("chat_id", ""),
@@ -435,16 +435,15 @@ class TwitterTelegramBot:
             logger.warning(f"Unauthorized command from chat_id: {chat_id}")
             return
 
-        # Convenience: Allow user to paste Gemini API key directly (starts with AIzaSy)
+        # Convenience: Allow user to paste OpenRouter API key directly (starts with sk-or-)
         clean_text = text.strip()
-        if clean_text.startswith("AIzaSy") and len(clean_text) >= 30 and " " not in clean_text:
-            self.config_mgr.set("gemini_api_key", clean_text)
+        if clean_text.startswith("sk-or-") and len(clean_text) >= 20 and " " not in clean_text:
+            self.config_mgr.set("openrouter_api_key", clean_text)
             self.summarizer.update_api_key(clean_text)
             self.notifier.send_telegram_message(
-                "✅ <b>Google Gemini API 키가 감지되어 즉시 등록되었습니다!</b>\n\n"
-                "• 적용 모델: <code>gemini-flash-lite-latest</code>\n"
-                "• 상태: <b>정상 연동 완료 🟢</b>\n\n"
-                "이제 모든 뉴스 및 AI 논문 수신 시 무료 AI 3줄 요약이 자동으로 적용됩니다."
+                "✅ <b>OpenRouter API 키가 감지되어 즉시 등록되었습니다!</b>\n\n"
+                "• 무료(:free) 모델 중 최적 모델을 1시간 주기로 자동 탐색 및 선정합니다.\n"
+                "• <code>/models</code> 명령어로 현재 활성 모델과 핑 상태를 확인할 수 있습니다."
             )
             return
 
@@ -460,10 +459,11 @@ class TwitterTelegramBot:
                 "• <code>/celebs</code> : 등록된 VIP 오피니언 리더 확인\n"
                 "• <code>/status</code> : 봇 작동 상태 및 Uptime 확인\n"
                 "• <code>/test</code> 또는 <code>/check</code> : 모든 소스에서 최신 원문 1건씩 즉시 실시간 수신 점검\n\n"
-                "🤖 <b>무료 AI 3줄 요약 (Gemini Flash-Lite)</b>\n"
-                "• <code>/gemini &lt;API_KEY&gt;</code> : Google Gemini API 키 등록 (키만 바로 전송해도 자동 인식)\n"
-                "• <code>/gemini</code> : 현재 키 상태 확인 (무료 발급 링크 포함)\n"
-                "• <code>/gemini clear</code> : 키 삭제 (기본 발췌 모드로 복귀)\n\n"
+                "🤖 <b>OpenRouter 무료 모델 자동 AI 3줄 요약</b>\n"
+                "• <code>/openrouter &lt;API_KEY&gt;</code> : OpenRouter API 키 등록 (키만 바로 전송해도 자동 인식)\n"
+                "• <code>/models</code> : 현재 선정된 활성 모델 및 1시간 주기 평가 현황 확인\n"
+                "• <code>/eval_models</code> : 지금 즉시 무료 모델 핑 테스트 및 최적 모델 재평가\n"
+                "• <code>/openrouter clear</code> : 키 삭제 (기본 발췌 모드로 복귀)\n\n"
                 "👤 <b>계정 관리</b>\n"
                 "• <code>/add_user &lt;아이디&gt;</code> : 감시할 X 계정 추가\n"
                 "• <code>/del_user &lt;아이디&gt;</code> : 감시 계정 제거\n\n"
@@ -502,9 +502,12 @@ class TwitterTelegramBot:
             interval = self.config_mgr.get("check_interval_seconds", 30)
             news_feed = "ON 🟢" if self.config_mgr.get("enable_news_feed", True) else "OFF 🔴"
             ntfy = self.config_mgr.get("ntfy_topic", "설정 안 됨")
-            gemini_key = self.config_mgr.get("gemini_api_key", "")
-            has_gemini = bool(gemini_key and not gemini_key.startswith("YOUR_"))
-            gemini_display = "Gemini Flash-Lite 연동 중 🟢" if has_gemini else "미연동 (기본 발췌) ⚪"
+            or_key = self.config_mgr.get("openrouter_api_key", "")
+            has_ai = bool(or_key and not or_key.startswith("YOUR_"))
+            status_info = self.summarizer.get_status()
+            active_model = status_info.get("active_model", "openrouter/free")
+            latency = status_info.get("latency_seconds", 0.0)
+            ai_display = f"OpenRouter [{active_model}] ({latency}s) 🟢" if has_ai else "미연동 (기본 발췌) ⚪"
 
             u_list = "\n".join([f"  • @{u}" for u in users]) if users else "  (없음)"
             k_list = "\n".join([f"  • <b>{k}</b>" for k in keywords]) if keywords else "  (없음)"
@@ -514,7 +517,7 @@ class TwitterTelegramBot:
                 f"👤 <b>감시 중인 VIP 계정 ({len(users)}개):</b>\n{u_list}\n\n"
                 f"🚨 <b>긴급 경보 키워드 ({len(keywords)}개):</b>\n{k_list}\n\n"
                 f"📰 <b>1차 소스 뉴스 피드:</b> {news_feed}\n"
-                f"🤖 <b>AI 3줄 요약 엔진:</b> {gemini_display}\n"
+                f"🤖 <b>AI 3줄 요약 엔진:</b> {ai_display}\n"
                 f"⏱️ <b>트위터 확인 주기:</b> {interval}초\n"
                 f"🔔 <b>ntfy 사이렌 토픽:</b> <code>{ntfy}</code>"
             )
@@ -589,35 +592,77 @@ class TwitterTelegramBot:
                     f"안드로이드 ntfy 앱에서 <b>{topic}</b> 토픽을 구독하면 긴급 사이렌을 수신합니다."
                 )
 
-        elif cmd in ["/gemini", "/set_gemini"]:
+        elif cmd in ["/openrouter", "/set_openrouter", "/ai_key", "/gemini"]:
             if not arg:
-                curr_key = self.config_mgr.get("gemini_api_key", "")
+                curr_key = self.config_mgr.get("openrouter_api_key", "")
                 has_key = bool(curr_key and not curr_key.startswith("YOUR_"))
-                masked = f"{curr_key[:6]}...{curr_key[-4:]}" if has_key else "미설정"
+                masked = f"{curr_key[:10]}...{curr_key[-4:]}" if has_key else "미설정"
+                status_info = self.summarizer.get_status()
+                active_model = status_info.get("active_model", "openrouter/free")
+                latency = status_info.get("latency_seconds", 0.0)
+
                 self.notifier.send_telegram_message(
-                    f"🤖 <b>Google Gemini Flash-Lite 무료 AI 3줄 요약</b>\n\n"
-                    f"• 상태: {'활성화 (3줄 인사이트 요약 가동 중) 🟢' if has_key else '비활성화 (기본 발췌 모드) ⚪'}\n"
-                    f"• 등록된 API Key: <code>{masked}</code>\n"
-                    f"• 적용 모델: <code>gemini-flash-lite-latest</code>\n\n"
+                    f"🤖 <b>OpenRouter 무료(:free) 모델 자동 선정 요약 엔진</b>\n\n"
+                    f"• API 키 상태: {'등록 완료 🟢' if has_key else '미설정 (기본 발췌 모드) ⚪'}\n"
+                    f"• 등록된 키: <code>{masked}</code>\n"
+                    f"• 현재 선정 모델: <code>{active_model}</code> (응답 {latency}s)\n"
+                    f"• 갱신 주기: <b>1시간 간격 자동 재평가</b>\n\n"
                     f"💡 <b>설정 방법:</b>\n"
-                    f"1. <a href=\"https://aistudio.google.com/app/apikey\">Google AI Studio (무료)</a> 에서 API Key 발급\n"
-                    f"2. <code>/gemini &lt;API_KEY&gt;</code> 입력 또는 키 문자열만 바로 채팅창에 전송\n\n"
-                    f"키를 삭제하려면 <code>/gemini clear</code> 를 입력하세요."
+                    f"1. <a href=\"https://openrouter.ai/keys\">OpenRouter Keys</a> 에서 API Key 발급\n"
+                    f"2. <code>/openrouter &lt;API_KEY&gt;</code> 입력 또는 <code>sk-or-...</code> 키 문자열을 채팅창에 바로 전송\n\n"
+                    f"• <code>/models</code> : 상위 무료 모델 랭킹 및 핑 상태 확인\n"
+                    f"• <code>/openrouter clear</code> : 키 삭제"
                 )
                 return
             if arg.lower() in ["clear", "none", "삭제"]:
-                self.config_mgr.set("gemini_api_key", "")
+                self.config_mgr.set("openrouter_api_key", "")
                 self.summarizer.update_api_key("")
-                self.notifier.send_telegram_message("🤖 Gemini API 키가 삭제되었습니다. (기본 발췌 모드로 복귀)")
+                self.notifier.send_telegram_message("🤖 OpenRouter API 키가 삭제되었습니다. (기본 발췌 모드로 복귀)")
             else:
-                self.config_mgr.set("gemini_api_key", arg)
+                self.config_mgr.set("openrouter_api_key", arg)
                 self.summarizer.update_api_key(arg)
                 self.notifier.send_telegram_message(
-                    "✅ <b>Gemini API 키가 성공적으로 설정되었습니다!</b>\n\n"
-                    "• 적용 모델: <code>gemini-flash-lite-latest</code>\n"
-                    "• 상태: <b>정상 연동 완료 🟢</b>\n\n"
-                    "이제 모든 뉴스 및 논문 수신 시 '핵심 결론 / 세부 내용 / 파급효과' 3줄 요약이 자동으로 생성됩니다."
+                    "✅ <b>OpenRouter API 키 설정 완료!</b>\n\n"
+                    "최적 무료 모델 탐색 및 핑 테스트를 진행합니다.\n"
+                    "<code>/models</code> 명령어로 현재 선정된 모델을 확인해보세요."
                 )
+
+        elif cmd in ["/models", "/ai_status", "/model"]:
+            status_info = self.summarizer.get_status()
+            active_model = status_info.get("active_model", "openrouter/free")
+            latency = status_info.get("latency_seconds", 0.0)
+            last_eval = status_info.get("last_evaluated_at")
+            candidates = status_info.get("candidates", [])
+
+            last_eval_str = time.strftime("%H:%M:%S", time.localtime(last_eval)) if last_eval else "평가 진행 중"
+
+            lines = [
+                "🤖 <b>OpenRouter 무료(:free) 모델 실시간 평가 현황</b>\n",
+                f"⭐️ <b>현재 선정된 활성 모델:</b>\n<code>{active_model}</code>",
+                f"• 최근 응답 지연시간: <b>{latency}s</b>",
+                f"• 최근 평가 시각: <b>{last_eval_str}</b> (1시간 주기 자동 갱신)\n",
+                "📊 <b>상위 후보 모델 평가 결과:</b>",
+            ]
+            for c in candidates[:5]:
+                cid = c.get("id", "")
+                status = c.get("status", "")
+                score = c.get("score", 0)
+                prefix = "👉 " if cid == active_model else "  • "
+                lines.append(f"{prefix}<code>{cid}</code> : <b>{status}</b> (점수: {score})")
+
+            lines.append("\n💡 <i>지금 즉시 재평가하려면 <code>/eval_models</code> 를 입력하세요.</i>")
+            self.notifier.send_telegram_message("\n".join(lines))
+
+        elif cmd in ["/eval_models", "/refresh_models"]:
+            self.notifier.send_telegram_message("🔍 OpenRouter 무료 모델 평가 및 핑 테스트를 즉시 시작합니다...")
+            def _run_eval():
+                self.summarizer.force_evaluate()
+                curr_status = self.summarizer.get_status()
+                self.notifier.send_telegram_message(
+                    f"✅ <b>모델 평가 완료!</b>\n"
+                    f"선정된 활성 모델: <code>{curr_status['active_model']}</code> ({curr_status['latency_seconds']}s)"
+                )
+            threading.Thread(target=_run_eval, daemon=True).start()
 
         elif cmd in ["/test", "/live_test", "/check", "/check_all"]:
             threading.Thread(target=self.run_live_test_thread, daemon=True).start()
@@ -627,16 +672,19 @@ class TwitterTelegramBot:
             seen_tweets = len(self.config_mgr.get("seen_tweet_ids", []))
             seen_news = len(self.config_mgr.get("seen_news_ids", []))
             uptime = int(time.time() - START_TIME)
-            gemini_key = self.config_mgr.get("gemini_api_key", "")
-            has_gemini = bool(gemini_key and not gemini_key.startswith("YOUR_"))
-            gemini_status = "ON (Gemini Flash-Lite) 🟢" if has_gemini else "OFF (기본 발췌) ⚪"
+            or_key = self.config_mgr.get("openrouter_api_key", "")
+            has_ai = bool(or_key and not or_key.startswith("YOUR_"))
+            status_info = self.summarizer.get_status()
+            active_model = status_info.get("active_model", "openrouter/free")
+            latency = status_info.get("latency_seconds", 0.0)
+            ai_status = f"ON [{active_model}] ({latency}s) 🟢" if has_ai else "OFF (기본 발췌) ⚪"
             self.notifier.send_telegram_message(
                 f"🟢 <b>Alpha Terminal 정상 구동 중</b>\n\n"
                 f"• 가동 시간(Uptime): {uptime}초\n"
                 f"• 감시 중인 VIP 계정: {len(users)}개\n"
                 f"• 누적 트윗 기록: {seen_tweets}개\n"
                 f"• 누적 뉴스 기록: {seen_news}개\n"
-                f"• AI 3줄 요약: {gemini_status}\n"
+                f"• AI 요약 엔진: {ai_status}\n"
                 f"• 뉴스 피드 상태: {'ON 🟢' if self.config_mgr.get('enable_news_feed', True) else 'OFF 🔴'}\n"
                 f"• 확인 주기: {self.config_mgr.get('check_interval_seconds', 30)}초"
             )
