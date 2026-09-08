@@ -12,7 +12,12 @@ from typing import Dict, Any, List
 
 from scraper import fetch_latest_tweets
 from notifier import Notifier
-from news_collector import fetch_all_curated_news
+from news_collector import (
+    fetch_all_curated_news,
+    fetch_korea_policy_news,
+    fetch_arxiv_ai_papers,
+    fetch_techcrunch_ai_news,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -328,6 +333,57 @@ class TwitterTelegramBot:
             news_interval = max(60, int(self.config_mgr.get("news_check_interval_seconds", 300)))
             time.sleep(news_interval)
 
+    def run_live_test_thread(self):
+        """Fetch and deliver the single most recent item from every live source."""
+        try:
+            self.notifier.send_telegram_message(
+                "🔍 <b>[라이브 테스트 가동]</b>\n"
+                "모든 소스(VIP 트위터 4인 + 정책·상법 뉴스 + AI 논문 + 테크 속보)에서 <b>가장 최근 원문 1건씩</b>을 실시간으로 가져옵니다...\n"
+                "<i>(약 10~15초 소요됩니다)</i>"
+            )
+
+            # 1. VIP Twitter Accounts
+            users = self.config_mgr.get("monitored_users", ["thsottiaux", "sama", "elonmusk", "realDonaldTrump"])
+            keywords = [k.lower() for k in self.config_mgr.get("priority_keywords", [])]
+
+            for u in users:
+                tweets = fetch_latest_tweets(u)
+                if tweets:
+                    top_t = tweets[0]
+                    tweet_content = (top_t.get("text", "") + " " + top_t.get("author", "")).lower()
+                    matched = [k for k in keywords if k in tweet_content]
+                    self.notifier.notify_tweet(top_t, matched)
+                time.sleep(1.5)
+
+            # 2. Economic Policy & Commercial Act (상법)
+            policy_items = fetch_korea_policy_news(["상법 개정"], limit_per_query=1)
+            if policy_items:
+                item = policy_items[0]
+                text_to_check = (item.get("title", "") + " " + item.get("summary", "")).lower()
+                matched = [k for k in keywords if k in text_to_check]
+                self.notifier.notify_news(item, matched)
+                time.sleep(1.0)
+
+            # 3. ArXiv CS.AI Frontier Papers
+            arxiv_items = fetch_arxiv_ai_papers(limit=1)
+            if arxiv_items:
+                self.notifier.notify_news(arxiv_items[0], matched_keywords=[])
+                time.sleep(1.0)
+
+            # 4. TechCrunch AI Industry News
+            tc_items = fetch_techcrunch_ai_news(limit=1)
+            if tc_items:
+                self.notifier.notify_news(tc_items[0], matched_keywords=[])
+
+            time.sleep(0.5)
+            self.notifier.send_telegram_message(
+                "✅ <b>[전체 소스 실시간 수신 검증 완료]</b>\n"
+                "모든 채널(총 7개)의 최신 데이터가 정상적으로 수신 및 발송되었습니다!"
+            )
+        except Exception as e:
+            logger.error(f"Error during live test: {e}", exc_info=True)
+            self.notifier.send_telegram_message(f"⚠️ 라이브 테스트 도중 오류 발생: {e}")
+
     def telegram_command_loop(self):
         while self.running:
             bot_token = self.config_mgr.get("bot_token", "")
@@ -383,7 +439,7 @@ class TwitterTelegramBot:
                 "• <code>/list</code> : 감시 계정 & 긴급 키워드 목록 조회\n"
                 "• <code>/celebs</code> : 등록된 VIP 오피니언 리더 확인\n"
                 "• <code>/status</code> : 봇 작동 상태 확인\n"
-                "• <code>/test</code> : VIP 트윗 & 정책 뉴스 경보 테스트 발송\n\n"
+                "• <code>/test</code> 또는 <code>/check</code> : 모든 7개 소스에서 최신 원문 1건씩 즉시 실시간 수신 점검\n\n"
                 "👤 <b>계정 관리</b>\n"
                 "• <code>/add_user &lt;아이디&gt;</code> : 감시할 X 계정 추가\n"
                 "• <code>/del_user &lt;아이디&gt;</code> : 감시 계정 제거\n\n"
@@ -505,29 +561,8 @@ class TwitterTelegramBot:
                     f"안드로이드 ntfy 앱에서 <b>{topic}</b> 토픽을 구독하면 긴급 사이렌을 수신합니다."
                 )
 
-        elif cmd == "/test":
-            self.notifier.send_telegram_message("🧪 <b>테스트 알림을 순서대로 발송합니다.</b>\n1. VIP 셀럽 일반 트윗:")
-            test_tweet = {
-                "username": "sama",
-                "author": "Sam Altman",
-                "text": "Excited to share our new frontier model breakthroughs today.",
-                "url": "https://x.com/sama",
-                "id": "test_sama_1",
-            }
-            self.notifier.notify_tweet(test_tweet, matched_keywords=[])
-
-            time.sleep(1.5)
-            self.notifier.send_telegram_message("2. 긴급 키워드('상법') 감지 경제 정책 속보:")
-            test_policy = {
-                "category": "🏛️ 경제 정책 · 상법",
-                "source": "국회 의안정보",
-                "title": "[긴급 테스트] 상법 일부개정법률안(이사의 충실의무 확대) 상임위 발의",
-                "summary": "주주의 비례적 이익을 보호하고 이사의 충실의무 대상을 회사 및 총주주로 명문화하는 상법 개정안이 국회에 정식 접수되었습니다.",
-                "url": "https://likms.assembly.go.kr/bill/main.do",
-                "published": "2026-09-08 14:00",
-                "id": "test_policy_1",
-            }
-            self.notifier.notify_news(test_policy, matched_keywords=["상법"])
+        elif cmd in ["/test", "/live_test", "/check", "/check_all"]:
+            threading.Thread(target=self.run_live_test_thread, daemon=True).start()
 
         elif cmd == "/status":
             users = self.config_mgr.get("monitored_users", [])

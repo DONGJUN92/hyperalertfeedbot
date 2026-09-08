@@ -36,7 +36,7 @@
 | `/celebs` | 현재 감시 중인 VIP 리더 목록 및 분야 확인 | `/celebs` |
 | `/list` | 감시 계정, 긴급 키워드, 뉴스 피드 상태 확인 | `/list` |
 | `/news_toggle` | IT/경제 정책 1차 뉴스 피드 ON / OFF 전환 | `/news_toggle` |
-| `/test` | VIP 트윗 & 정책 뉴스 경보 가상 테스트 발송 | `/test` |
+| `/test` (또는 `/check`) | 모든 7개 소스에서 최신 원문 1건씩 즉시 실시간 수신 점검 | `/test` |
 | `/add_user <계정>` | 감시할 X 계정 추가 | `/add_user vitalikbuterin` |
 | `/del_user <계정>` | 감시 계정 제거 | `/del_user thsottiaux` |
 | `/add_keyword <단어>` | 긴급 사이렌 키워드 추가 | `/add_keyword 관세` |
