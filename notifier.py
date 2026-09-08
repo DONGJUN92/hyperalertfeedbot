@@ -126,11 +126,27 @@ class Notifier:
         header_tag = "[URGENT]" if is_emergency else f"[{badge}]"
         time_meta = f" · {safe_time}" if safe_time else ""
 
+        # Generate Korean AI briefing if summarizer is available
+        ai_briefing = None
+        if self.summarizer:
+            try:
+                ai_briefing = self.summarizer.summarize_tweet(author, username, text)
+            except Exception as e:
+                logger.debug(f"AI tweet briefing error: {e}")
+
+        if ai_briefing:
+            safe_ai = ai_briefing if len(ai_briefing) <= 3500 else ai_briefing[:3500] + "..."
+            body_block = html_escape(safe_ai)
+            original_block = f"\n\n• <b>원문 발언:</b> <i>\"{safe_text}\"</i>"
+        else:
+            body_block = safe_text
+            original_block = ""
+
         if is_emergency:
             kw_str = ", ".join([f"<code>{html_escape(k)}</code>" for k in matched_keywords])
             msg = (
                 f"<b>{header_tag} @{username}</b> ({safe_author}){time_meta}\n\n"
-                f"<blockquote>{safe_text}</blockquote>\n\n"
+                f"<blockquote>{body_block}</blockquote>{original_block}\n\n"
                 f"• <b>감지 키워드:</b> {kw_str}\n"
                 f"• <b>원문 링크:</b> <a href=\"{url}\">x.com/{username}</a>"
             )
@@ -153,7 +169,7 @@ class Notifier:
         else:
             msg = (
                 f"<b>{header_tag} @{username}</b> ({safe_author}){time_meta}\n\n"
-                f"<blockquote>{safe_text}</blockquote>\n\n"
+                f"<blockquote>{body_block}</blockquote>{original_block}\n\n"
                 f"• <b>원문 링크:</b> <a href=\"{url}\">x.com/{username}</a>"
             )
             self.send_telegram_message(msg, disable_notification=False)

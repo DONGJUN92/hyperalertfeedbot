@@ -290,11 +290,79 @@ def get_env_api_key() -> str:
     return ""
 
 
+def validate_api_key(api_key: str) -> Tuple[bool, str]:
+    """Live-probes an API key against OpenRouter or Google Gemini endpoints."""
+    if not api_key:
+        return False, "API 키가 등록되지 않았습니다."
+    key = api_key.strip()
+    if key.startswith("AIzaSy"):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+        try:
+            resp = requests.post(url, json={"contents": [{"parts": [{"text": "ping"}]}]}, timeout=10)
+            if resp.status_code == 200:
+                return True, "Google Gemini Flash 정상 인증 🟢"
+            else:
+                return False, f"Google Gemini 인증 실패 (HTTP {resp.status_code})"
+        except Exception as e:
+            return False, f"Gemini 연결 실패: {e}"
+    else:
+        url = "https://openrouter.ai/api/v1/auth/key"
+        headers = {"Authorization": f"Bearer {key}"}
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json().get("data", {})
+                label = data.get("label", "OpenRouter Key")
+                return True, f"OpenRouter 정상 인증 🟢 ({label})"
+            elif resp.status_code == 401:
+                return False, "OpenRouter 401 Unauthorized (User not found): 계정이 없거나 키가 만료/삭제되었습니다."
+            else:
+                return False, f"OpenRouter 인증 실패 (HTTP {resp.status_code})"
+        except Exception as e:
+            return False, f"OpenRouter 연결 실패: {e}"
+
+
+def call_gemini_api(api_key: str, system_prompt: str, user_prompt: str) -> Optional[str]:
+    """Call Google Gemini Flash REST API with zero external dependencies."""
+    combined_prompt = f"{system_prompt}\n\n[입력 텍스트]\n{user_prompt}"
+    models = ["gemini-2.5-flash", "gemini-1.5-flash"]
+    headers = {"Content-Type": "application/json"}
+    for mod in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
+        payload = {
+            "contents": [{"parts": [{"text": combined_prompt}]}],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 3000,
+            },
+        }
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=25)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts:
+                        text = parts[0].get("text", "")
+                        cleaned = clean_ai_summary(text)
+                        if cleaned and len(cleaned) >= 20:
+                            logger.info(f"[AISummarizer] Successfully generated briefing using Google Gemini ({mod})")
+                            return cleaned
+            else:
+                logger.warning(f"Google Gemini ({mod}) returned HTTP {resp.status_code}: {resp.text[:150]}")
+        except Exception as e:
+            logger.error(f"Google Gemini call error on {mod}: {e}")
+    return None
+
+
 class AISummarizer:
     def __init__(self, api_key: Optional[str] = None):
         key = (api_key or get_env_api_key()).strip()
         self.selector = OpenRouterModelSelector(api_key=key, eval_interval_seconds=3600)
-        self.selector.start_hourly_loop()
+        self.last_error: Optional[str] = None
+        if key and not key.startswith("AIzaSy"):
+            self.selector.start_hourly_loop()
 
     @property
     def api_key(self) -> str:
@@ -302,21 +370,53 @@ class AISummarizer:
 
     def update_api_key(self, api_key: str):
         self.selector.set_api_key(api_key)
+        self.last_error = None
+        if api_key and not api_key.startswith("AIzaSy"):
+            self.selector.start_hourly_loop()
+
+    def validate_current_key(self) -> Tuple[bool, str]:
+        return validate_api_key(self.api_key)
+
+    def get_active_model(self) -> str:
+        if self.api_key.startswith("AIzaSy"):
+            return "google/gemini-2.5-flash"
+        return self.selector.get_active_model()
 
     def get_status(self) -> Dict[str, Any]:
-        return self.selector.get_status()
+        status = self.selector.get_status()
+        if self.api_key.startswith("AIzaSy"):
+            status["active_model"] = "google/gemini-2.5-flash"
+            status["provider"] = "Google Gemini"
+        else:
+            status["provider"] = "OpenRouter"
+        status["last_error"] = self.last_error
+        return status
 
     def force_evaluate(self) -> str:
+        if self.api_key.startswith("AIzaSy"):
+            return "google/gemini-2.5-flash"
         return self.selector.evaluate_and_select()
+
+    def summarize_tweet(self, author: str, username: str, text: str) -> Optional[str]:
+        """Summarize and translate foreign/English VIP tweet into a Korean executive briefing."""
+        clean_text = (text or "").strip()
+        if not clean_text:
+            return None
+        return self.summarize(
+            title=f"@{username} ({author}) VIP 공식 발언",
+            content=clean_text,
+            category="VIP 트윗 브리핑",
+        )
 
     def summarize(self, title: str, content: str, category: str = "") -> Optional[str]:
         """
-        Summarize news article or ArXiv paper into a rich conversational briefing using OpenRouter.
-        Returns formatted string for Telegram or None if fallback needed.
+        Summarize tweet, news, or ArXiv paper into a rich conversational briefing.
+        Supports both Google Gemini and OpenRouter free models.
         """
         curr_key = self.api_key or get_env_api_key()
         if not curr_key or curr_key.startswith("YOUR_"):
             logger.warning("[AISummarizer] Cannot summarize: API key is not configured.")
+            self.last_error = "API 키 미설정"
             return None
 
         # Ensure selector has key
@@ -326,19 +426,19 @@ class AISummarizer:
         # Prepare context
         clean_content = (content or "").strip()
         if clean_content and clean_content != title.strip() and len(clean_content) > 30:
-            body_text = f"제목: {title}\n원문 내용:\n{clean_content}"
+            body_text = f"제목/화자: {title}\n원문 내용:\n{clean_content}"
         else:
-            body_text = f"기사 제목 및 속보: {title}"
+            body_text = f"제목 및 내용: {title}\n{clean_content}"
 
         system_prompt = (
             "너는 최고위 의사결정권자(경영진·투자자)에게 핵심 인텔리전스를 1:1로 직접 구두 보고하는 전담 수석 분석관이다.\n"
-            "복잡한 뉴스나 기술 논문의 중요 정보(구체적 사실, 배경, 핵심 인물/기업, 주요 수치, 산업·정책적 파급효과)가 일체 소실되지 않도록, "
-            "글자 수 제한을 의식하지 말고 충분히 깊이 있고 상세하게 정중한 구어체 브리핑 형식(~했습니다, ~상황입니다, ~전망됩니다)으로 설명한다.\n\n"
+            "영문 또는 국문 뉴스, 트윗, 기술 논문의 중요 정보(구체적 사실, 배경, 핵심 인물/기업, 주요 수치, 산업·정책적 파급효과)가 일체 소실되지 않도록, "
+            "글자 수 제한을 의식하지 말고 충분히 깊이 있고 상세하게 정중한 한국어 구어체 브리핑 형식(~했습니다, ~상황입니다, ~전망됩니다)으로 설명하라.\n\n"
             "[작성 원칙]\n"
             "1. 절대 서론 인사('안녕하세요', '브리핑입니다' 등)나 맺음말, 분석 과정(Thinking process), 메타 발언을 쓰지 마라. 바로 본론으로 시작하라.\n"
             "2. 마크다운 기호(**, #, 따옴표 등)나 인위적인 대괄호([], '• 핵심:' 등의 인위적 태그)를 쓰지 마라.\n"
             "3. 2~4개의 정갈한 문단으로 구성하되, 각 문단은 자연스러운 구어체 완결 문장으로 상세히 작성하라:\n"
-            "   - 첫째 문단: 사건 또는 기술의 가장 핵심적인 사실과 본질을 명확하고 완성도 높게 설명.\n"
+            "   - 첫째 문단: 사건 또는 발언/기술의 가장 핵심적인 사실과 본질을 명확하고 완성도 높게 설명.\n"
             "   - 중간 문단들: 구체적 발생 배경, 관련 기업/인물, 수치 및 세부 진행 경과를 누락 없이 상세히 설명.\n"
             "   - 마지막 문단: 시장, 정책, 산업 생태계에 미칠 파급효과 및 주요 시사점을 전망.\n"
             "4. 중간에 문장이 끊기거나 중요한 팩트가 생략되지 않도록 끝까지 완결된 문장으로 작성하라."
@@ -347,10 +447,21 @@ class AISummarizer:
         user_prompt = (
             f"분야: {category}\n"
             f"{body_text}\n\n"
-            "위 내용을 바탕으로 중요 정보나 구체적 수치가 누락되지 않도록 충분히 상세하고 깊이 있는 구어체 브리핑으로 작성해줘.\n"
+            "위 내용을 바탕으로 중요 정보나 구체적 수치가 누락되지 않도록 충분히 상세하고 깊이 있는 한국어 구어체 브리핑으로 작성해줘.\n"
             "인사말이나 인위적인 불릿 태그 없이 바로 본론 브리핑을 시작해줘."
         )
 
+        # 1. Google Gemini Provider
+        if curr_key.startswith("AIzaSy"):
+            res = call_gemini_api(curr_key, system_prompt, user_prompt)
+            if res:
+                self.last_error = None
+                return res
+            else:
+                self.last_error = "Google Gemini 호출 실패"
+                return None
+
+        # 2. OpenRouter Provider
         headers = {
             "Authorization": f"Bearer {curr_key}",
             "HTTP-Referer": "https://github.com/DONGJUN92/hyperalertfeedbot",
@@ -358,7 +469,6 @@ class AISummarizer:
             "Content-Type": "application/json",
         }
 
-        # Try active model first, then add verified candidates and fallbacks
         active_model = self.selector.get_active_model()
         attempt_models = [active_model]
         with self.selector.lock:
@@ -397,15 +507,23 @@ class AISummarizer:
                         cleaned_text = clean_ai_summary(raw_text)
                         if cleaned_text and len(cleaned_text) >= 20:
                             logger.info(f"[AISummarizer] Successfully generated briefing using {mod} ({len(cleaned_text)} chars)")
+                            self.last_error = None
                             return cleaned_text
+                elif resp.status_code == 401:
+                    logger.warning(f"OpenRouter ({mod}) returned HTTP 401: User not found / Invalid API key.")
+                    self.last_error = "OpenRouter 401: User not found (계정 미존재 또는 키 만료)"
+                    break  # 401 means the key itself is dead, trying other models won't help
                 else:
                     logger.warning(f"OpenRouter ({mod}) returned HTTP {resp.status_code}: {resp.text[:200]}")
+                    self.last_error = f"OpenRouter HTTP {resp.status_code}"
             except Exception as e:
                 logger.error(f"OpenRouter summarization exception on {mod}: {e}")
+                self.last_error = f"네트워크 예외: {e}"
 
         return None
 
 
 if __name__ == "__main__":
     summarizer = AISummarizer()
-    print("Summarizer initialized. Initial active model:", summarizer.selector.get_active_model())
+    print("Summarizer initialized. Initial active model:", summarizer.get_active_model())
+
