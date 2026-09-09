@@ -196,6 +196,8 @@ class Notifier:
         # Determine clean category tag
         if "상법" in category or "상법" in title:
             tag = "POLICY/상법"
+        elif "공정" in category or "규제" in category:
+            tag = "REGULATION"
         elif "금융" in category or "경제" in category:
             tag = "MACRO POLICY"
         elif "논문" in category or "ArXiv" in source:

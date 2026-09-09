@@ -113,6 +113,7 @@ class ConfigManager:
                     "openrouter_api_key": "",
                     "seen_tweet_ids": [],
                     "seen_news_ids": [],
+                    "seen_news_titles": [],
                 }
                 with open(self.filepath, "w", encoding="utf-8") as f:
                     json.dump(default_config, f, indent=2, ensure_ascii=False)
@@ -233,16 +234,45 @@ class ConfigManager:
                 self.config["seen_tweet_ids"] = seen[-1000:]
             self.save()
 
-    def is_news_seen(self, news_id: str) -> bool:
-        return news_id in self.config.get("seen_news_ids", [])
+    def is_title_seen(self, title: str, threshold: float = 0.45) -> bool:
+        if not title:
+            return False
+        clean = re.sub(r"[^a-zA-Z0-9가-힣\s]", " ", title)
+        words = set([w.lower() for w in clean.split() if len(w) >= 2])
+        if not words:
+            return False
+        recent_titles = self.config.get("seen_news_titles", [])
+        for past in recent_titles[-200:]:
+            clean_p = re.sub(r"[^a-zA-Z0-9가-힣\s]", " ", past)
+            words_p = set([w.lower() for w in clean_p.split() if len(w) >= 2])
+            if not words_p:
+                continue
+            inter = len(words.intersection(words_p))
+            union = len(words.union(words_p))
+            if union > 0 and (inter / union) >= threshold:
+                return True
+        return False
 
-    def mark_news_seen(self, news_id: str):
+    def is_news_seen(self, news_id: str, title: str = "") -> bool:
+        if news_id in self.config.get("seen_news_ids", []):
+            return True
+        if title and self.is_title_seen(title):
+            return True
+        return False
+
+    def mark_news_seen(self, news_id: str, title: str = ""):
         seen = self.config.setdefault("seen_news_ids", [])
         if news_id not in seen:
             seen.append(news_id)
             if len(seen) > 1000:
                 self.config["seen_news_ids"] = seen[-1000:]
-            self.save()
+        if title:
+            titles = self.config.setdefault("seen_news_titles", [])
+            if title not in titles:
+                titles.append(title)
+                if len(titles) > 1000:
+                    self.config["seen_news_titles"] = titles[-1000:]
+        self.save()
 
 
 class TwitterTelegramBot:
@@ -337,8 +367,10 @@ class TwitterTelegramBot:
         initial_news = fetch_all_curated_news()
         new_baseline_count = 0
         for n in initial_news:
-            if not self.config_mgr.is_news_seen(n["id"]):
-                self.config_mgr.mark_news_seen(n["id"])
+            nid = n["id"]
+            ntitle = n.get("title", "")
+            if not self.config_mgr.is_news_seen(nid, ntitle):
+                self.config_mgr.mark_news_seen(nid, ntitle)
                 new_baseline_count += 1
         if new_baseline_count > 0:
             logger.info(f"Registered {new_baseline_count} news items as initial baseline.")
@@ -351,13 +383,14 @@ class TwitterTelegramBot:
 
                     for item in news_items:
                         nid = item["id"]
-                        if not self.config_mgr.is_news_seen(nid):
-                            search_text = (item.get("title", "") + " " + item.get("summary", "")).lower()
+                        title = item.get("title", "")
+                        if not self.config_mgr.is_news_seen(nid, title):
+                            search_text = (title + " " + item.get("summary", "")).lower()
                             matched = [k for k in keywords if k in search_text]
 
-                            logger.info(f"New news item: [{item['category']}] {item['title'][:40]}... Matched: {matched}")
+                            logger.info(f"New news item: [{item['category']}] {title[:40]}... Matched: {matched}")
                             self.notifier.notify_news(item, matched)
-                            self.config_mgr.mark_news_seen(nid)
+                            self.config_mgr.mark_news_seen(nid, title)
 
             except Exception as e:
                 logger.error(f"Error in news monitor loop: {e}", exc_info=True)

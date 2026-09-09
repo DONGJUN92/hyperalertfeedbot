@@ -105,13 +105,22 @@ def fetch_techcrunch_ai_news(limit: int = 5) -> List[Dict[str, Any]]:
     return results
 
 
+EXCLUDE_ENTERTAINMENT_KEYWORDS = [
+    "방송", "출연", "예능", "아이돌", "가수", "배우", "드라마", "영화", "포맨", "돌싱",
+    "음원", "소속사", "연습생", "유튜브", "스포츠", "축구", "야구", "골프", "연예", "화보",
+    "미담", "투병", "암 투병", "결혼", "이혼", "열애", "음주", "폭행", "마약", "연예인",
+    "팬미팅", "콘서트", "빌보드", "음반", "뮤직", "시청률", "예고편", "피소", "피의자",
+    "스캔들", "사생활", "조권", "김혜수", "세바퀴", "먹방", "인터뷰",
+]
+
+
 def fetch_korea_policy_news(queries: List[str] = None, limit_per_query: int = 4) -> List[Dict[str, Any]]:
     """
     Fetch primary economic policy & Commercial Act (상법) news with rich real-time summaries.
     Uses Daum News real-time search to guarantee authentic Korean lead paragraphs/abstracts for AI summarization.
     """
     if queries is None:
-        queries = ["상법 개정", "공정거래위원회", "금융위원회 경제정책"]
+        queries = ["상법 개정", "자본시장법 금융위", "공정거래위원회 기업결합", "공정거래법 개정"]
 
     results = []
     seen_urls = set()
@@ -138,13 +147,25 @@ def fetch_korea_policy_news(queries: List[str] = None, limit_per_query: int = 4)
                         link_str = a_el.get("href", "").strip() if a_el else ""
                         if not link_str or link_str in seen_urls:
                             continue
-                        seen_urls.add(link_str)
 
                         title = clean_cdata(t_el.get_text(strip=True))
                         summary = clean_cdata(d_el.get_text(strip=True)) if d_el else ""
                         pub_date = clean_cdata(sub_el.get_text(strip=True)) if sub_el else ""
 
-                        category = "🏛️ 경제 정책 · 상법" if "상법" in q else ("⚖️ 공정위 & 규제 정책" if "공정위" in q else "📈 금융 & 경제 정책")
+                        # Filter out entertainment, celebrity gossip, and tabloid noise
+                        full_content_lower = f"{title} {summary}".lower()
+                        if any(ex in full_content_lower for ex in EXCLUDE_ENTERTAINMENT_KEYWORDS):
+                            continue
+
+                        seen_urls.add(link_str)
+
+                        if "상법" in q:
+                            category = "🏛️ 경제 정책 · 상법"
+                        elif "공정" in q:
+                            category = "⚖️ 공정위 & 규제 정책"
+                        else:
+                            category = "📈 금융 & 경제 정책"
+
                         results.append({
                             "id": make_id(link_str),
                             "category": category,
@@ -243,8 +264,8 @@ def fetch_geeknews(limit: int = 5) -> List[Dict[str, Any]]:
 def fetch_all_curated_news() -> List[Dict[str, Any]]:
     """Fetch curated items across AI, IT Tech, Economic / Commercial law policy, and GeekNews."""
     all_items = []
-    # 1. Economic / Commercial Law (상법)
-    all_items.extend(fetch_korea_policy_news(["상법 개정", "자본시장법 금융위원회", "공정거래위원회"]))
+    # 1. Economic / Commercial Law (상법) & Antitrust (공정거래)
+    all_items.extend(fetch_korea_policy_news(["상법 개정", "자본시장법 금융위", "공정거래위원회 기업결합", "공정거래법 개정"]))
     # 2. GeekNews (https://news.hada.io/) - notify on every new post
     all_items.extend(fetch_geeknews(limit=5))
     # 3. ArXiv AI
