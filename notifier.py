@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 import requests
 from typing import Optional, Dict, Any, List
@@ -135,8 +136,7 @@ class Notifier:
                 logger.debug(f"AI tweet briefing error: {e}")
 
         if ai_briefing:
-            safe_ai = ai_briefing if len(ai_briefing) <= 3500 else ai_briefing[:3500] + "..."
-            body_block = html_escape(safe_ai)
+            body_block = format_briefing_blockquote(ai_briefing)
             original_block = f"\n\n• <b>원문 발언:</b> <i>\"{safe_text}\"</i>"
         else:
             body_block = safe_text
@@ -224,8 +224,7 @@ class Notifier:
 
         # Clean blockquote body
         if ai_summary:
-            safe_ai = ai_summary if len(ai_summary) <= 3500 else ai_summary[:3500] + "..."
-            body_block = html_escape(safe_ai)
+            body_block = format_briefing_blockquote(ai_summary)
         else:
             clean_s = (summary or "").strip()
             clean_t = (title or "").strip()
@@ -273,4 +272,29 @@ def html_escape(text: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+
+
+def format_briefing_blockquote(ai_text: str) -> str:
+    """Format AI briefing with a bolded one-liner lead sentence and clean paragraphs."""
+    if not ai_text:
+        return ""
+    safe_text = ai_text if len(ai_text) <= 3500 else ai_text[:3500] + "..."
+    paragraphs = [p.strip() for p in safe_text.split("\n\n") if p.strip()]
+    if not paragraphs:
+        return html_escape(safe_text)
+
+    first_p = paragraphs[0]
+    sent_match = re.search(r"^(.*?[.!?])(?:\s+|$)(.*)", first_p, re.DOTALL)
+    if sent_match and len(sent_match.group(1)) > 10:
+        lead_sent = sent_match.group(1).strip()
+        tail_sent = sent_match.group(2).strip()
+        formatted_p1 = f"<b>{html_escape(lead_sent)}</b>"
+        if tail_sent:
+            formatted_p1 += f" {html_escape(tail_sent)}"
+    else:
+        formatted_p1 = f"<b>{html_escape(first_p)}</b>" if len(first_p) < 120 else html_escape(first_p)
+
+    other_ps = [html_escape(p) for p in paragraphs[1:]]
+    return "\n\n".join([formatted_p1] + other_ps)
+
 

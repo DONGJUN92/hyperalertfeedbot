@@ -369,55 +369,38 @@ class AISummarizer:
         return self.selector.evaluate_and_select()
 
     def summarize_tweet(self, author: str, username: str, text: str) -> Optional[str]:
-        """Summarize and translate foreign/English VIP tweet into a Korean executive briefing."""
+        """
+        Summarize and translate foreign/English VIP tweet into a concise, fact-anchored Korean briefing.
+        Strictly prevents over-interpretation, speculation, or hallucinations.
+        Target length: 150-250 chars (2~3 complete sentences in 1 paragraph).
+        """
         clean_text = (text or "").strip()
         if not clean_text:
             return None
-        return self.summarize(
-            title=f"@{username} ({author}) VIP 공식 발언",
-            content=clean_text,
-            category="VIP 트윗 브리핑",
-        )
 
-    def summarize(self, title: str, content: str, category: str = "") -> Optional[str]:
-        """
-        Summarize tweet, news, or ArXiv paper into a rich conversational briefing using OpenRouter free models.
-        """
         curr_key = self.api_key or get_env_api_key()
         if not curr_key or curr_key.startswith("YOUR_"):
-            logger.warning("[AISummarizer] Cannot summarize: OpenRouter API key is not configured.")
+            logger.warning("[AISummarizer] Cannot summarize tweet: OpenRouter API key is not configured.")
             self.last_error = "OpenRouter API 키 미설정"
             return None
 
-        # Ensure selector has key
         if not self.selector.api_key and curr_key:
             self.selector.set_api_key(curr_key)
 
-        # Prepare context
-        clean_content = (content or "").strip()
-        if clean_content and clean_content != title.strip() and len(clean_content) > 30:
-            body_text = f"제목/출처: {title}\n원문 내용:\n{clean_content}"
-        else:
-            body_text = f"제목 및 내용: {title}\n{clean_content}"
-
         system_prompt = (
-            "너는 최고위 의사결정권자(경영진·투자자)에게 실시간 인텔리전스를 1:1로 직접 구두 보고하는 전담 수석 분석관이다.\n"
-            "영문 또는 국문 원문의 모든 중요 사실, 배경, 핵심 인물/기업, 구체적 수치, 향후 시장·산업·정책적 파급효과를 절대로 누락하지 말고, "
-            "글자 수 제한 없이 충분히 깊이 있고 상세하게 100% 정중한 한국어 구어체(~했습니다, ~상황입니다, ~전망됩니다) 완결 문장으로 브리핑하라.\n\n"
+            "너는 글로벌 최고위 인물(빅테크 CEO, 거시 정책 리더)의 짧은 트윗 발언을 가장 신속하고 정확하게 전달하는 팩트체크 전담 브리퍼다.\n\n"
             "[작성 수칙 - 엄격 준수]\n"
-            "1. 반드시 순수 한국어로만 작성하라. 영어 원문이더라도 완벽한 한국어로 번역 및 재해석하여 설명하라.\n"
-            "2. 서론 인사('안녕하세요', '브리핑입니다' 등)나 맺음말, 분석 과정(Thinking process, CoT), 메타 발언을 일체 쓰지 말고 본론 브리핑 문장으로 즉시 시작하라.\n"
-            "3. 마크다운 기호(**, #, 따옴표)나 인위적인 불릿 머리말(•, [핵심] 등)을 쓰지 말고, 2~4개의 단락으로 자연스럽게 나누어 작성하라:\n"
-            "   - 단락 1: 사건/발언/연구의 가장 핵심적인 사실과 본질을 명확하고 완성도 높게 브리핑.\n"
-            "   - 단락 2: 구체적 발생 배경, 관련 기업/인물, 수치 및 세부 진행 경과를 상세히 설명.\n"
-            "   - 단락 3: 시장, 정책, 산업 생태계에 미칠 파급효과 및 주요 시사점을 전망.\n"
-            "4. 중간에 문장이 끊기지 않도록 끝까지 완결된 문장으로 작성하라."
+            "1. 절대적 팩트 중심: 화자가 직접 언급한 사실(원문 발언)만 충실히 번역·요약하라.\n"
+            "2. 과해석 및 뇌피셜 엄격 금지: 원문에 없는 거시적 시장 전망, 자의적 추측, 기업 전략에 대한 상상력을 일체 덧붙이지 마라.\n"
+            "3. 분량 및 형식: 딱 2~3개의 정중한 한국어 구어체 완결 문장(~했습니다, ~밝혔습니다)으로 구성된 1개의 짧은 단락(150~250자)으로만 작성하라.\n"
+            "4. 첫 문장은 화자의 핵심 발언 내용을 두괄식으로 가장 명확하게 전달하라.\n"
+            "5. 서론 인사말('안녕하세요'), 맺음말, 마크다운 기호(**, #, 따옴표), 인위적 불릿 태그를 일체 쓰지 말고 본문으로 시작하라."
         )
 
         user_prompt = (
-            f"[수집 분야: {category}]\n"
-            f"{body_text}\n\n"
-            "위 내용의 핵심 팩트와 수치가 누락되지 않도록 상세하고 깊이 있는 한국어 구어체 완결 문단 브리핑으로 작성해주세요. 인사말 없이 바로 브리핑을 시작하세요."
+            f"화자: @{username} ({author})\n"
+            f"트윗 원문:\n\"{clean_text}\"\n\n"
+            "위 발언의 핵심을 자의적인 과해석이나 추측 없이 원문 팩트 그대로, 정중한 한국어 구어체 완결 문장 2~3개(1개 단락, 200자 내외)로 신속히 브리핑해주세요. 인사말 없이 바로 시작하세요."
         )
 
         headers = {
@@ -455,8 +438,115 @@ class AISummarizer:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "temperature": 0.2,
-                "max_tokens": 3000,
+                "temperature": 0.1,
+                "max_tokens": 500,
+            }
+            try:
+                resp = requests.post(OPENROUTER_CHAT_URL, json=payload, headers=headers, timeout=20)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    choices = data.get("choices", [])
+                    if choices:
+                        raw_text = choices[0].get("message", {}).get("content", "").strip()
+                        cleaned_text = clean_ai_summary(raw_text)
+                        if cleaned_text and len(cleaned_text) >= 15:
+                            logger.info(f"[AISummarizer] Successfully generated tweet briefing using {mod} ({len(cleaned_text)} chars)")
+                            self.last_error = None
+                            return cleaned_text
+                elif resp.status_code == 401:
+                    logger.warning(f"OpenRouter ({mod}) returned HTTP 401: Invalid API key.")
+                    self.last_error = "OpenRouter HTTP 401: 인증 실패"
+                    break
+                else:
+                    logger.warning(f"OpenRouter ({mod}) returned HTTP {resp.status_code}: {resp.text[:200]}")
+                    self.last_error = f"OpenRouter HTTP {resp.status_code}"
+            except Exception as e:
+                logger.error(f"OpenRouter tweet summarization exception on {mod}: {e}")
+                self.last_error = f"네트워크 예외: {e}"
+
+        return None
+
+    def summarize(self, title: str, content: str, category: str = "") -> Optional[str]:
+        """
+        Summarize news or ArXiv paper into a compact, 2-paragraph executive briefing with a one-liner takeaway.
+        Target length: 350-450 chars (50% reduction from previous verbose essays).
+        """
+        curr_key = self.api_key or get_env_api_key()
+        if not curr_key or curr_key.startswith("YOUR_"):
+            logger.warning("[AISummarizer] Cannot summarize: OpenRouter API key is not configured.")
+            self.last_error = "OpenRouter API 키 미설정"
+            return None
+
+        # Ensure selector has key
+        if not self.selector.api_key and curr_key:
+            self.selector.set_api_key(curr_key)
+
+        # Prepare context
+        clean_content = (content or "").strip()
+        if clean_content and clean_content != title.strip() and len(clean_content) > 30:
+            body_text = f"제목/출처: {title}\n원문 내용:\n{clean_content}"
+        else:
+            body_text = f"제목 및 내용: {title}\n{clean_content}"
+
+        system_prompt = (
+            "너는 최고위 의사결정권자(경영진·투자자)에게 실시간 핵심 인텔리전스를 스마트폰 모바일 화면에 최적화하여 1:1로 직접 구두 보고하는 전담 수석 분석관이다.\n"
+            "장황한 서술이나 세세한 과정 묘사는 과감히 쳐내고, 핵심 팩트와 주요 수치, 실질적 시사점을 350~450자 내외로 매우 컴팩트하게 정중한 한국어 구어체(~했습니다, ~상황입니다, ~전망됩니다)로 브리핑하라.\n\n"
+            "[작성 수칙 - 엄격 준수]\n"
+            "1. 반드시 순수 한국어로만 작성하라. 영어 원문이더라도 완벽한 한국어로 번역 및 재해석하여 설명하라.\n"
+            "2. 서론 인사('안녕하세요', '브리핑입니다' 등)나 맺음말, 분석 과정(Thinking process, CoT), 메타 발언을 일체 쓰지 말고 본론으로 시작하라.\n"
+            "3. 마크다운 기호(**, #, 따옴표)나 불릿 기호(•, -)를 쓰지 말고, 다음과 같이 정확히 2개의 정갈한 단락으로 구성하라:\n"
+            "   - 단락 1 (핵심 결론 및 구체적 팩트/수치, 2~3문장): 전체를 관통하는 핵심 결론 1문장을 첫 머리에 두괄식으로 밝힌 뒤, 발생 배경과 주요 수치/기업/인물을 압축하여 설명.\n"
+            "   - 단락 2 (실질적 영향 및 시사점, 1~2문장): 시장, 정책, 산업 생태계에 미칠 실질적 파급효과 및 핵심 시사점을 압축 전망.\n"
+            "4. 세세한 기술 시연 묘사나 지엽적인 과정 서술은 생략하고, 의사결정에 꼭 필요한 골자만 400자 내외로 간결하게 전달하라.\n"
+            "5. 중간에 문장이 끊기지 않도록 끝까지 완결된 문장으로 작성하라."
+        )
+
+        user_prompt = (
+            f"[수집 분야: {category}]\n"
+            f"{body_text}\n\n"
+            "위 내용의 핵심 결론과 중요 수치가 한눈에 들어오도록 2개의 정갈한 단락(총 350~450자 내외)의 한국어 구어체 완결 문단 브리핑으로 작성해주세요. 첫 문장에 핵심 결론을 두괄식으로 밝히고 인사말 없이 바로 시작하세요."
+        )
+
+        headers = {
+            "Authorization": f"Bearer {curr_key}",
+            "HTTP-Referer": "https://github.com/DONGJUN92/hyperalertfeedbot",
+            "X-Title": "Alpha Intelligence Feed Bot",
+            "Content-Type": "application/json",
+        }
+
+        active_model = self.selector.get_active_model()
+        attempt_models = [active_model]
+        with self.selector.lock:
+            for c in self.selector.candidate_summary:
+                cid = c.get("id")
+                if cid and cid not in attempt_models:
+                    attempt_models.append(cid)
+
+        reliable_fallbacks = [
+            "google/gemma-4-31b-it:free",
+            "google/gemma-4-26b-a4b-it:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "nvidia/nemotron-3.5-lightning:free",
+            "inclusionai/ling-3.0-flash-fin:free",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            DEFAULT_FALLBACK_MODEL,
+        ]
+        for fb in reliable_fallbacks:
+            if fb not in attempt_models:
+                attempt_models.append(fb)
+
+        # Dynamic max_tokens based on content length
+        token_cap = 650 if len(clean_content) < 300 else 900
+
+        for mod in attempt_models[:5]:
+            payload = {
+                "model": mod,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.15,
+                "max_tokens": token_cap,
             }
             try:
                 resp = requests.post(OPENROUTER_CHAT_URL, json=payload, headers=headers, timeout=25)
