@@ -222,12 +222,13 @@ class OpenRouterModelSelector:
 
 def clean_ai_summary(text: str) -> str:
     """
-    Post-process AI output to guarantee a natural, conversational executive briefing.
-    1. Removes <think>...</think> and unclosed think/thought tags.
-    2. Strips thinking process preambles and extracts Korean text.
-    3. Strips greetings ('안녕하세요', 'Here is a briefing') and sign-offs.
-    4. Strips markdown asterisks, hashes, backticks, and bracket tags.
-    5. Formats into clean, readable briefing paragraphs separated by blank lines.
+    Post-process AI output to guarantee a clean, natural, conversational executive briefing.
+    1. Removes XML-style <think>...</think> and unclosed think/thought tags.
+    2. Strips English planning, chain-of-thought, character-counting scratchpads, and prefixes.
+    3. Strips markdown asterisks, hashes, backticks, artificial bracket tags, and surrounding quotes.
+    4. Filters out lines lacking meaningful Korean content.
+    5. Deduplicates repetitive drafted paragraphs.
+    6. Formats into clean, readable briefing paragraphs separated by blank lines.
     """
     if not text:
         return ""
@@ -240,14 +241,9 @@ def clean_ai_summary(text: str) -> str:
     if "<thought>" in text:
         text = re.sub(r"<thought>.*", "", text, flags=re.DOTALL | re.IGNORECASE)
 
-    # 2. Strip thinking process preambles
-    ko_match = re.search(r"[\uac00-\ud7a3]", text)
-    if ko_match:
-        preamble = text[:ko_match.start()].lower()
-        if any(p in preamble for p in ["thinking", "analyze", "here", "role:", "field:", "prompt", "user:"]):
-            text = text[ko_match.start():]
-
     lines = []
+    seen_paras = set()
+
     for raw in text.split("\n"):
         line = raw.strip()
         if not line:
@@ -255,31 +251,62 @@ def clean_ai_summary(text: str) -> str:
                 lines.append("")
             continue
 
-        # Skip English meta/thinking lines
-        if any(line.lower().startswith(p) for p in [
-            "here's", "here is", "thinking process", "analyze user request", "role:", "field:", "title:", "excerpt:", "format", "time constraint", "note:"
+        # Strip prefixes like 'Paragraph 1:', 'Paragraph1:', '단락 1:', '[1]'
+        line = re.sub(r"^(Paragraph\s*\d*|단락\s*\d*|Section\s*\d*|Part\s*\d*)\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+        line = re.sub(r"^\[.*?\]\s*:?", "", line).strip()
+        line = re.sub(r"^(핵심|배경|전망|시사점|요약)\s*:\s*", "", line).strip()
+        line = re.sub(r"^[-•\d\.]+\s*", "", line).strip()
+
+        # Strip wrapping quotes
+        if (line.startswith('"') and line.endswith('"')) or (line.startswith("'") and line.endswith("'")):
+            line = line[1:-1].strip()
+
+        line_lower = line.lower()
+
+        # Skip English meta/thinking/planning/counting lines
+        english_starters = [
+            "we need", "let's", "let us", "here's", "here is", "thinking process", "analyze",
+            "must be", "i need", "i will", "i'll", "now count", "let me", "count", "character",
+            "paragraph", "draft", "wait", "note:", "role:", "field:", "prompt:", "user:", "output:",
+            "sure,", "certainly", "okay,"
+        ]
+        if any(line_lower.startswith(s) for s in english_starters):
+            continue
+
+        # Skip greetings & meta introductions
+        if any(line.startswith(g) for g in [
+            "안녕하세요", "안녕하십니까", "브리핑을 시작하겠습니다", "다음은 브리핑", "보고서 요약입니다",
+            "이상 브리핑", "감사합니다", "요약 브리핑:", "이상으로 브리핑", "이상으로"
         ]):
             continue
 
-        # Strip greetings & meta introductions
-        if any(line.startswith(g) for g in [
-            "안녕하세요", "안녕하십니까", "브리핑을 시작하겠습니다", "다음은 브리핑", "보고서 요약입니다", "이상 브리핑", "감사합니다", "요약 브리핑:"
-        ]):
+        # Skip lines that are character counting artifacts (e.g. '현(1)장2 space3...')
+        if "space" in line_lower or re.search(r"\(\d+\)", line) or re.search(r"[가-힣]\d+[가-힣]", line):
+            continue
+
+        # Check Korean ratio: authentic Korean briefing lines MUST have meaningful Hangul characters
+        hangul_chars = re.findall(r"[\uac00-\ud7a3]", line)
+        latin_chars = re.findall(r"[a-zA-Z]", line)
+        if len(hangul_chars) < 10 and len(latin_chars) > len(hangul_chars):
+            continue
+
+        # Must have sufficient Hangul characters to be a genuine sentence
+        if len(hangul_chars) < 15:
             continue
 
         # Strip markdown symbols
         line = line.replace("**", "").replace("*", "").replace("`", "").replace("#", "").strip()
 
-        # Strip artificial bracket tags or bullet headers at line starts
-        line = re.sub(r"^\[.*?\]\s*:?", "", line).strip()
-        line = re.sub(r"^(핵심|배경|전망|시사점|요약)\s*:\s*", "", line).strip()
-        line = re.sub(r"^[-•\d\.]+\s*", "", line).strip()
+        # Deduplicate identical paragraphs
+        norm_line = re.sub(r"\s+", "", line)
+        if norm_line in seen_paras:
+            continue
+        seen_paras.add(norm_line)
 
-        if line:
-            lines.append(line)
+        lines.append(line)
 
-    cleaned = "\n".join(lines).strip()
-    return re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = "\n\n".join([l for l in lines if l]).strip()
+    return cleaned
 
 
 def get_env_api_key() -> str:
@@ -392,15 +419,16 @@ class AISummarizer:
             "[작성 수칙 - 엄격 준수]\n"
             "1. 절대적 팩트 중심: 화자가 직접 언급한 사실(원문 발언)만 충실히 번역·요약하라.\n"
             "2. 과해석 및 뇌피셜 엄격 금지: 원문에 없는 거시적 시장 전망, 자의적 추측, 기업 전략에 대한 상상력을 일체 덧붙이지 마라.\n"
-            "3. 분량 및 형식: 딱 2~3개의 정중한 한국어 구어체 완결 문장(~했습니다, ~밝혔습니다)으로 구성된 1개의 짧은 단락(150~250자)으로만 작성하라.\n"
+            "3. 분량 및 형식: 정확히 2~3개의 정중한 한국어 구어체 완결 문장(~했습니다, ~밝혔습니다)으로 구성된 1개의 짧은 단락으로만 작성하라.\n"
             "4. 첫 문장은 화자의 핵심 발언 내용을 두괄식으로 가장 명확하게 전달하라.\n"
-            "5. 서론 인사말('안녕하세요'), 맺음말, 마크다운 기호(**, #, 따옴표), 인위적 불릿 태그를 일체 쓰지 말고 본문으로 시작하라."
+            "5. 서론 인사말('안녕하세요'), 맺음말, 마크다운 기호(**, #, 따옴표), 인위적 불릿 태그를 일체 쓰지 마라.\n"
+            "6. 영어 생각(Thinking/Planning), 글자 수 계산 과정을 일체 출력하지 말고 오직 완성된 한국어 브리핑 단락만 즉시 출력하라."
         )
 
         user_prompt = (
             f"화자: @{username} ({author})\n"
             f"트윗 원문:\n\"{clean_text}\"\n\n"
-            "위 발언의 핵심을 자의적인 과해석이나 추측 없이 원문 팩트 그대로, 정중한 한국어 구어체 완결 문장 2~3개(1개 단락, 200자 내외)로 신속히 브리핑해주세요. 인사말 없이 바로 시작하세요."
+            "위 발언의 핵심을 자의적인 과해석이나 추측 없이 원문 팩트 그대로, 정중한 한국어 구어체 완결 문장 2~3개(1개 단락)로 신속히 브리핑해주세요. 생각 과정이나 영어 없이 오직 한국어 브리핑 본문만 출력하세요."
         )
 
         headers = {
@@ -490,21 +518,21 @@ class AISummarizer:
 
         system_prompt = (
             "너는 최고위 의사결정권자(경영진·투자자)에게 실시간 핵심 인텔리전스를 스마트폰 모바일 화면에 최적화하여 1:1로 직접 구두 보고하는 전담 수석 분석관이다.\n"
-            "장황한 서술이나 세세한 과정 묘사는 과감히 쳐내고, 핵심 팩트와 주요 수치, 실질적 시사점을 350~450자 내외로 매우 컴팩트하게 정중한 한국어 구어체(~했습니다, ~상황입니다, ~전망됩니다)로 브리핑하라.\n\n"
+            "장황한 서술이나 지엽적인 과정 묘사는 과감히 쳐내고, 핵심 팩트와 주요 수치, 실질적 시사점을 2개의 짧은 단락으로 매우 간결하게 정중한 한국어 구어체(~했습니다, ~상황입니다, ~전망됩니다)로 브리핑하라.\n\n"
             "[작성 수칙 - 엄격 준수]\n"
             "1. 반드시 순수 한국어로만 작성하라. 영어 원문이더라도 완벽한 한국어로 번역 및 재해석하여 설명하라.\n"
-            "2. 서론 인사('안녕하세요', '브리핑입니다' 등)나 맺음말, 분석 과정(Thinking process, CoT), 메타 발언을 일체 쓰지 말고 본론으로 시작하라.\n"
-            "3. 마크다운 기호(**, #, 따옴표)나 불릿 기호(•, -)를 쓰지 말고, 다음과 같이 정확히 2개의 정갈한 단락으로 구성하라:\n"
-            "   - 단락 1 (핵심 결론 및 구체적 팩트/수치, 2~3문장): 전체를 관통하는 핵심 결론 1문장을 첫 머리에 두괄식으로 밝힌 뒤, 발생 배경과 주요 수치/기업/인물을 압축하여 설명.\n"
-            "   - 단락 2 (실질적 영향 및 시사점, 1~2문장): 시장, 정책, 산업 생태계에 미칠 실질적 파급효과 및 핵심 시사점을 압축 전망.\n"
-            "4. 세세한 기술 시연 묘사나 지엽적인 과정 서술은 생략하고, 의사결정에 꼭 필요한 골자만 400자 내외로 간결하게 전달하라.\n"
-            "5. 중간에 문장이 끊기지 않도록 끝까지 완결된 문장으로 작성하라."
+            "2. 서론 인사('안녕하세요', '브리핑입니다' 등)나 맺음말, 분석 과정(Thinking process, CoT), 메타 발언, 영어 계획 문장을 일체 쓰지 말고 본론 단락으로 즉시 시작하라.\n"
+            "3. 마크다운 기호(**, #, 따옴표)나 불릿 기호(•, -)를 쓰지 말고, 다음과 같이 정확히 2개의 정갈하고 짧은 단락으로 구성하라:\n"
+            "   - 단락 1 (핵심 결론 및 구체적 팩트/수치, 2~3문장): 전체를 관통하는 핵심 결론 1문장을 첫 머리에 두괄식으로 밝힌 뒤, 구체적 사실과 핵심 수치를 압축 설명.\n"
+            "   - 단락 2 (실질적 영향 및 시사점, 1~2문장): 시장, 정책, 산업 생태계에 미칠 실질적 파급효과 및 시사점을 압축 전망.\n"
+            "4. 세세한 과정 서술이나 지엽적인 설명은 생략하고, 의사결정에 꼭 필요한 골자만 짧고 명확하게 전달하라.\n"
+            "5. 글자 수 계산 과정이나 영어 독백, 생각 과정을 일체 출력하지 마라. 오직 완성된 최종 한국어 브리핑 단락만 출력하라."
         )
 
         user_prompt = (
             f"[수집 분야: {category}]\n"
             f"{body_text}\n\n"
-            "위 내용의 핵심 결론과 중요 수치가 한눈에 들어오도록 2개의 정갈한 단락(총 350~450자 내외)의 한국어 구어체 완결 문단 브리핑으로 작성해주세요. 첫 문장에 핵심 결론을 두괄식으로 밝히고 인사말 없이 바로 시작하세요."
+            "위 내용의 핵심 결론과 중요 수치가 한눈에 들어오도록 정확히 2개의 짧은 단락(단락 1은 2~3문장, 단락 2는 1~2문장)으로 구성된 정중한 한국어 구어체 완결 문단 브리핑으로 작성해주세요. 첫 문장에 핵심 결론을 두괄식으로 밝히고, 생각 과정이나 영어 없이 오직 브리핑 본문만 즉시 출력하세요."
         )
 
         headers = {
