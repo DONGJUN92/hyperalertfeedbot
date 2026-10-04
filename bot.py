@@ -12,8 +12,15 @@ import requests
 from typing import Dict, Any, List, Optional
 
 from scraper import fetch_latest_tweets
-from notifier import Notifier, CELEBRITY_BADGES
+from notifier import (
+    Notifier,
+    CELEBRITY_BADGES,
+    html_escape,
+    build_feedback_keyboard,
+    build_feedback_updated_keyboard,
+)
 from summarizer import AISummarizer, get_env_api_key, validate_api_key
+from preference_engine import PreferenceEngine
 from news_collector import (
     fetch_all_curated_news,
     fetch_korea_policy_news,
@@ -278,12 +285,14 @@ class ConfigManager:
 class TwitterTelegramBot:
     def __init__(self):
         self.config_mgr = ConfigManager()
+        self.preference_engine = PreferenceEngine()
         self.summarizer = AISummarizer(api_key=self.config_mgr.get("openrouter_api_key", ""))
         self.notifier = Notifier(
             bot_token=self.config_mgr.get("bot_token", ""),
             chat_id=self.config_mgr.get("chat_id", ""),
             ntfy_topic=self.config_mgr.get("ntfy_topic", ""),
             summarizer=self.summarizer,
+            preference_engine=self.preference_engine,
         )
         self.running = True
         self.last_update_id = 0
@@ -481,11 +490,81 @@ class TwitterTelegramBot:
                 if data.get("ok"):
                     for update in data.get("result", []):
                         self.last_update_id = max(self.last_update_id, update["update_id"])
-                        if "message" in update and "text" in update["message"]:
+                        if "callback_query" in update:
+                            self.handle_callback_query(update["callback_query"])
+                        elif "message" in update and "text" in update["message"]:
                             self.handle_command(update["message"])
             except Exception as e:
                 logger.debug(f"getUpdates error (polling): {e}")
                 time.sleep(3)
+
+    def answer_callback_query(self, callback_query_id: str, text: str = "", show_alert: bool = False):
+        bot_token = self.config_mgr.get("bot_token", "")
+        if not bot_token or bot_token.startswith("YOUR_"):
+            return
+        url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
+        payload = {
+            "callback_query_id": callback_query_id,
+            "text": text,
+            "show_alert": show_alert,
+        }
+        try:
+            requests.post(url, json=payload, headers={"User-Agent": "FeedBot/1.0"}, timeout=10)
+        except Exception as e:
+            logger.debug(f"answerCallbackQuery error: {e}")
+
+    def edit_message_reply_markup(self, chat_id: Any, message_id: int, reply_markup: Dict[str, Any]):
+        bot_token = self.config_mgr.get("bot_token", "")
+        if not bot_token or bot_token.startswith("YOUR_"):
+            return
+        url = f"https://api.telegram.org/bot{bot_token}/editMessageReplyMarkup"
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reply_markup": reply_markup,
+        }
+        try:
+            requests.post(url, json=payload, headers={"User-Agent": "FeedBot/1.0"}, timeout=10)
+        except Exception as e:
+            logger.debug(f"editMessageReplyMarkup error: {e}")
+
+    def handle_callback_query(self, cb: Dict[str, Any]):
+        cb_id = cb.get("id", "")
+        cb_data = cb.get("data", "")
+        msg = cb.get("message", {})
+        chat_id = msg.get("chat", {}).get("id")
+        msg_id = msg.get("message_id")
+        configured_chat_id = str(self.config_mgr.get("chat_id", ""))
+
+        if str(chat_id) != configured_chat_id:
+            self.answer_callback_query(cb_id, text="접근 권한이 없는 사용자입니다.", show_alert=True)
+            return
+
+        if cb_data.startswith("fb:l:"):
+            content_id = cb_data[5:]
+            ok, text = self.preference_engine.record_feedback(content_id, "like")
+            self.answer_callback_query(cb_id, text=text, show_alert=False)
+            if ok and msg_id:
+                new_kb = build_feedback_updated_keyboard(content_id, "like")
+                self.edit_message_reply_markup(chat_id, msg_id, new_kb)
+
+        elif cb_data.startswith("fb:d:"):
+            content_id = cb_data[5:]
+            ok, text = self.preference_engine.record_feedback(content_id, "dislike")
+            self.answer_callback_query(cb_id, text=text, show_alert=False)
+            if ok and msg_id:
+                new_kb = build_feedback_updated_keyboard(content_id, "dislike")
+                self.edit_message_reply_markup(chat_id, msg_id, new_kb)
+
+        elif cb_data.startswith("fb:u:"):
+            content_id = cb_data[5:]
+            ok, text = self.preference_engine.undo_feedback(content_id)
+            self.answer_callback_query(cb_id, text=text, show_alert=False)
+            if ok and msg_id:
+                new_kb = build_feedback_keyboard(content_id)
+                self.edit_message_reply_markup(chat_id, msg_id, new_kb)
+        else:
+            self.answer_callback_query(cb_id, text="확인되었습니다.")
 
     def handle_command(self, msg: Dict[str, Any]):
         chat_id = str(msg["chat"]["id"])
@@ -568,10 +647,17 @@ class TwitterTelegramBot:
                 "🏛️ <b>Alpha Intelligence Feed 터미널 안내</b>\n\n"
                 "📋 <b>상태 및 점검</b>\n"
                 "• <code>/list</code> : 감시 계정, 키워드, AI 요약 설정 조회\n"
+                "• <code>/pref</code> : AI 딥러닝 취향 학습 & 맞춤 추천 현황 조회\n"
+                "• <code>/pref_log</code> : 최근 AI 딥러닝에 의해 차단된 소식 내역 확인\n"
                 "• <code>/links</code> : 현재 연결된 X(트위터) 모니터링 링크 전체 조회\n"
                 "• <code>/celebs</code> : 등록된 VIP 오피니언 리더 확인\n"
                 "• <code>/status</code> : 봇 작동 상태 및 Uptime 확인\n"
                 "• <code>/test</code> 또는 <code>/check</code> : 모든 소스에서 최신 원문 1건씩 즉시 실시간 수신 점검\n\n"
+                "🎯 <b>AI 딥러닝 취향 학습 & 필터링 (메시지 버튼 연동)</b>\n"
+                "• 수신된 메시지 하단의 <code>[ 👍 유용함 ]</code> 클릭 시 관련 분야 맞춤 추천 증폭\n"
+                "• 수신된 메시지 하단의 <code>[ 👎 관심없음 ]</code> 클릭 시 관련 분야 자동 필터링 차단\n"
+                "• 실수 터치 시 <code>[ ↩️ 취소 ]</code> 버튼으로 즉시 피드백 철회 가능\n"
+                "• <code>/pref_reset</code> : 취향 학습 데이터 초기화 (다시 시작)\n\n"
                 "🔗 <b>X(트위터) 연결 링크 관리</b>\n"
                 "• <code>/add_link &lt;URL|아이디&gt;</code> : X 링크/계정 추가 (채팅창에 URL 바로 전송해도 자동 등록!)\n"
                 "• <code>/del_link &lt;URL|아이디&gt;</code> : X 링크/계정 모니터링 해제\n"
@@ -928,6 +1014,62 @@ class TwitterTelegramBot:
                 f"• 뉴스 피드 상태: {'ON 🟢' if self.config_mgr.get('enable_news_feed', True) else 'OFF 🔴'}\n"
                 f"• 확인 주기: {self.config_mgr.get('check_interval_seconds', 30)}초"
             )
+
+        elif cmd in ["/pref", "/feedback", "/preferences"]:
+            stats = self.preference_engine.get_stats()
+            ready_str = "가동 중 🟢 (다국어 INT8 트랜스포머)" if stats["model_ready"] else "초기화 중 ⚪ (잠시 후 완료)"
+            likes_n = stats["like_count"]
+            dislikes_n = stats["dislike_count"]
+
+            lines = [
+                "🎯 <b>AI 딥러닝 취향 학습 & 맞춤 추천 현황</b>\n",
+                f"• <b>딥러닝 임베딩 엔진:</b> {ready_str}",
+                f"• <b>👍 학습된 선호 소식:</b> {likes_n}건",
+                f"• <b>👎 학습된 비선호 소식:</b> {dislikes_n}건\n",
+            ]
+            if stats["recent_likes"]:
+                lines.append("⭐️ <b>최근 선호(추천) 학습 주제:</b>")
+                for t in stats["recent_likes"]:
+                    lines.append(f"  • {html_escape(t[:40])}")
+                lines.append("")
+            if stats["recent_dislikes"]:
+                lines.append("🚫 <b>최근 비선호(차단) 학습 주제:</b>")
+                for t in stats["recent_dislikes"]:
+                    lines.append(f"  • {html_escape(t[:40])}")
+                lines.append("")
+            if stats["recent_blocked"]:
+                lines.append("🛡️ <b>최근 AI가 필터링한 소식 (차단 로그):</b>")
+                for b in stats["recent_blocked"]:
+                    lines.append(f"  • {html_escape(b['title'][:35])}... ({b['time'][11:16]})")
+                lines.append("")
+
+            lines.extend([
+                "💡 <b>피드백 방법:</b>",
+                "• 메시지 하단 <code>[ 👍 유용함 ]</code> 클릭 시 관련 분야 맞춤 추천 증폭",
+                "• 메시지 하단 <code>[ 👎 관심없음 ]</code> 클릭 시 관련 분야 자동 필터링 차단",
+                "• 실수로 누른 경우 <code>[ ↩️ 취소 ]</code> 버튼으로 즉시 되돌리기 가능\n",
+                "⚙️ <b>관리 명령어:</b>",
+                "• <code>/pref_log</code> : 최근 AI 차단 상세 내역 조회",
+                "• <code>/pref_reset</code> : 취향 학습 데이터 초기화",
+            ])
+            self.notifier.send_telegram_message("\n".join(lines))
+
+        elif cmd in ["/pref_reset", "/reset_pref", "/feedback_reset"]:
+            self.preference_engine.reset()
+            self.notifier.send_telegram_message("🗑️ <b>딥러닝 취향 학습 데이터가 초기화되었습니다.</b>\n새로운 피드백을 수집하여 다시 학습을 시작합니다.")
+
+        elif cmd in ["/pref_log", "/blocked_log"]:
+            stats = self.preference_engine.get_stats()
+            blocked = stats.get("recent_blocked", [])
+            if not blocked:
+                self.notifier.send_telegram_message("🛡️ 현재까지 AI 딥러닝 모델에 의해 차단된 소식이 없습니다.")
+            else:
+                lines = ["🛡️ <b>최근 AI 딥러닝 필터링(차단) 상세 내역</b>\n"]
+                for idx, b in enumerate(blocked, 1):
+                    lines.append(f"{idx}. <b>{html_escape(b['title'])}</b>")
+                    lines.append(f"   • 시각: {b['time']}")
+                    lines.append(f"   • 사유: <code>{html_escape(b['reason'])}</code>\n")
+                self.notifier.send_telegram_message("\n".join(lines))
 
 
 if __name__ == "__main__":

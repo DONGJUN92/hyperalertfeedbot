@@ -23,20 +23,29 @@ CELEBRITY_BADGES = {
 
 
 class Notifier:
-    def __init__(self, bot_token: str, chat_id: str, ntfy_topic: str = "", summarizer=None):
+    def __init__(self, bot_token: str, chat_id: str, ntfy_topic: str = "", summarizer=None, preference_engine=None):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.ntfy_topic = ntfy_topic.strip() if ntfy_topic else ""
         self.summarizer = summarizer
+        self.preference_engine = preference_engine
 
-    def update_credentials(self, bot_token: str, chat_id: str, ntfy_topic: str = "", summarizer=None):
+    def update_credentials(self, bot_token: str, chat_id: str, ntfy_topic: str = "", summarizer=None, preference_engine=None):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.ntfy_topic = ntfy_topic.strip() if ntfy_topic else ""
         if summarizer is not None:
             self.summarizer = summarizer
+        if preference_engine is not None:
+            self.preference_engine = preference_engine
 
-    def send_telegram_message(self, text: str, disable_notification: bool = False, max_retries: int = 3) -> Optional[int]:
+    def send_telegram_message(
+        self,
+        text: str,
+        disable_notification: bool = False,
+        reply_markup: Optional[Dict[str, Any]] = None,
+        max_retries: int = 3,
+    ) -> Optional[int]:
         """Send a message via Telegram bot with automatic retries. Returns message_id if successful."""
         if not self.bot_token or self.bot_token.startswith("YOUR_"):
             logger.warning("Telegram bot_token is not configured yet.")
@@ -46,13 +55,15 @@ class Notifier:
             return None
 
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        payload = {
+        payload: Dict[str, Any] = {
             "chat_id": self.chat_id,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": False,
             "disable_notification": disable_notification,
         }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
 
         for attempt in range(1, max_retries + 1):
             try:
@@ -120,11 +131,36 @@ class Notifier:
 
         is_emergency = len(matched_keywords) > 0
 
+        # Short ID for Telegram 64-byte callback_data
+        raw_tid = str(tweet.get("id", ""))
+        short_id = f"tw_{raw_tid[-8:]}" if raw_tid else f"tw_{make_short_hash(text)}"
+
+        header_tag = "[URGENT]" if is_emergency else f"[{badge}]"
+
+        # Evaluate preference via Deep Learning model
+        if self.preference_engine:
+            self.preference_engine.cache_content(
+                content_id=short_id,
+                text=text,
+                title=f"@{username}: {text[:50]}",
+                category="VIP 트윗",
+                url=url,
+            )
+            should_block, is_boosted, reason = self.preference_engine.evaluate_content(
+                text=text,
+                category="VIP 트윗",
+                matched_keywords=matched_keywords,
+            )
+            if should_block:
+                logger.info(f"🚫 Tweet suppressed by AI preference model: @{username} ({reason})")
+                return None
+            if is_boosted and not is_emergency:
+                header_tag = f"⭐️ [맞춤 추천] [{badge}]"
+
         safe_author = html_escape(author)
         safe_time = html_escape(time_str)
         safe_text = html_escape(text)
 
-        header_tag = "[URGENT]" if is_emergency else f"[{badge}]"
         time_meta = f" · {safe_time}" if safe_time else ""
 
         # Generate Korean AI briefing if summarizer is available
@@ -142,6 +178,8 @@ class Notifier:
             body_block = safe_text
             original_block = ""
 
+        reply_markup = build_feedback_keyboard(short_id)
+
         if is_emergency:
             kw_str = ", ".join([f"<code>{html_escape(k)}</code>" for k in matched_keywords])
             msg = (
@@ -150,7 +188,7 @@ class Notifier:
                 f"• <b>감지 키워드:</b> {kw_str}\n"
                 f"• <b>원문 링크:</b> <a href=\"{url}\">x.com/{username}</a>"
             )
-            msg_id = self.send_telegram_message(msg, disable_notification=False)
+            msg_id = self.send_telegram_message(msg, disable_notification=False, reply_markup=reply_markup)
             if msg_id:
                 self.pin_telegram_message(msg_id)
 
@@ -172,7 +210,7 @@ class Notifier:
                 f"<blockquote>{body_block}</blockquote>{original_block}\n\n"
                 f"• <b>원문 링크:</b> <a href=\"{url}\">x.com/{username}</a>"
             )
-            self.send_telegram_message(msg, disable_notification=False)
+            self.send_telegram_message(msg, disable_notification=False, reply_markup=reply_markup)
 
             if self.ntfy_topic:
                 self.send_ntfy_push(
@@ -193,6 +231,10 @@ class Notifier:
 
         is_emergency = len(matched_keywords) > 0
 
+        # Short ID for Telegram 64-byte callback_data
+        raw_nid = str(news_item.get("id", ""))
+        short_id = f"nw_{raw_nid[:8]}" if raw_nid else f"nw_{make_short_hash(title)}"
+
         # Determine clean category tag
         if "상법" in category or "상법" in title:
             tag = "POLICY/상법"
@@ -209,6 +251,27 @@ class Notifier:
 
         if is_emergency:
             tag = f"URGENT {tag}"
+
+        # Evaluate preference via Deep Learning model
+        if self.preference_engine:
+            full_content = f"{title} {summary}"
+            self.preference_engine.cache_content(
+                content_id=short_id,
+                text=full_content,
+                title=title,
+                category=category,
+                url=url,
+            )
+            should_block, is_boosted, reason = self.preference_engine.evaluate_content(
+                text=full_content,
+                category=category,
+                matched_keywords=matched_keywords,
+            )
+            if should_block:
+                logger.info(f"🚫 News suppressed by AI preference model: [{category}] {title[:30]} ({reason})")
+                return None
+            if is_boosted and not is_emergency:
+                tag = f"⭐️ 맞춤추천 | {tag}"
 
         safe_title = html_escape(title)
         safe_source = html_escape(source)
@@ -248,7 +311,8 @@ class Notifier:
             f"• <b>원문 보기:</b> <a href=\"{url}\">1차 출처 바로가기</a>"
         )
 
-        msg_id = self.send_telegram_message(msg, disable_notification=False)
+        reply_markup = build_feedback_keyboard(short_id)
+        msg_id = self.send_telegram_message(msg, disable_notification=False, reply_markup=reply_markup)
         if is_emergency and msg_id:
             self.pin_telegram_message(msg_id)
 
@@ -296,5 +360,38 @@ def format_briefing_blockquote(ai_text: str) -> str:
 
     other_ps = [html_escape(p) for p in paragraphs[1:]]
     return "\n\n".join([formatted_p1] + other_ps)
+
+
+def make_short_hash(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+
+
+def build_feedback_keyboard(content_id: str) -> Dict[str, Any]:
+    """Build interactive Telegram Inline Keyboard with Like and Dislike buttons."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "👍 유용함", "callback_data": f"fb:l:{content_id}"},
+                {"text": "👎 관심없음", "callback_data": f"fb:d:{content_id}"},
+            ]
+        ]
+    }
+
+
+def build_feedback_updated_keyboard(content_id: str, feedback_type: str) -> Dict[str, Any]:
+    """Build updated Inline Keyboard showing state and offering undo (↩️)."""
+    if feedback_type == "like":
+        btn_text = "👍 반영됨 (취소: ↩️)"
+    else:
+        btn_text = "👎 차단 반영됨 (취소: ↩️)"
+    return {
+        "inline_keyboard": [
+            [
+                {"text": btn_text, "callback_data": f"fb:u:{content_id}"}
+            ]
+        ]
+    }
+
 
 

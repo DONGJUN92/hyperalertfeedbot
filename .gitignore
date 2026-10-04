@@ -13,3 +13,9 @@ __pycache__/
 venv/
 .venv/
 env/
+
+# Local cache & downloaded weights
+models/
+data/
+scratch/
+
