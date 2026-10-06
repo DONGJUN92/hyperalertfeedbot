@@ -476,8 +476,24 @@ class TwitterTelegramBot:
             logger.error(f"Error during live test: {e}", exc_info=True)
             self.notifier.send_telegram_message(f"⚠️ 라이브 테스트 도중 오류 발생: {e}")
 
+    def clear_telegram_webhook(self, bot_token: str):
+        try:
+            url = f"https://api.telegram.org/bot{bot_token}/deleteWebhook"
+            resp = requests.post(url, json={"drop_pending_updates": False}, headers={"User-Agent": "FeedBot/1.0"}, timeout=10)
+            data = resp.json()
+            if data.get("ok"):
+                logger.info("Telegram webhook successfully cleared. Long polling mode active.")
+            else:
+                logger.warning(f"Failed to clear Telegram webhook: {data}")
+        except Exception as e:
+            logger.error(f"Error clearing Telegram webhook: {e}")
+
     def telegram_command_loop(self):
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        initial_token = self.config_mgr.get("bot_token", "")
+        if initial_token and not initial_token.startswith("YOUR_"):
+            self.clear_telegram_webhook(initial_token)
+
         while self.running:
             bot_token = self.config_mgr.get("bot_token", "")
             if not bot_token or bot_token.startswith("YOUR_"):
@@ -496,6 +512,16 @@ class TwitterTelegramBot:
                             self.handle_callback_query(update["callback_query"])
                         elif "message" in update and "text" in update["message"]:
                             self.handle_command(update["message"])
+                else:
+                    err_code = data.get("error_code")
+                    err_desc = data.get("description", "")
+                    if err_code == 409:
+                        logger.warning(f"Telegram 409 Conflict: {err_desc}. Clearing webhook and retrying...")
+                        self.clear_telegram_webhook(bot_token)
+                        time.sleep(3)
+                    else:
+                        logger.warning(f"Telegram getUpdates API error ({err_code}): {err_desc}")
+                        time.sleep(3)
             except Exception as e:
                 logger.debug(f"getUpdates error (polling): {e}")
                 time.sleep(3)
