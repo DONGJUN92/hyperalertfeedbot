@@ -85,16 +85,18 @@ def run_health_server(port: int):
 
 
 def run_keep_alive_ping():
-    """Prevent Render free tier spin-down by pinging external URL every 10 minutes."""
+    """Prevent Render free tier spin-down by pinging external URL every 8 minutes."""
+    time.sleep(30)  # Initial pause to let HTTP health server start
+    render_url = os.environ.get("RENDER_EXTERNAL_URL") or "https://hyperalertfeedbot.onrender.com"
+    logger.info(f"Keep-alive ping daemon active. Target URL: {render_url}")
+
     while True:
-        time.sleep(600)  # Every 10 minutes
-        render_url = os.environ.get("RENDER_EXTERNAL_URL")
-        if render_url:
-            try:
-                requests.get(render_url, headers={"User-Agent": "RenderKeepAlive/1.0"}, timeout=10)
-                logger.info(f"Keep-alive self-ping sent to {render_url}")
-            except Exception as e:
-                logger.debug(f"Keep-alive ping error: {e}")
+        try:
+            resp = requests.get(render_url, headers={"User-Agent": "RenderKeepAlive/1.0"}, timeout=15)
+            logger.info(f"Keep-alive self-ping sent to {render_url} (HTTP {resp.status_code})")
+        except Exception as e:
+            logger.debug(f"Keep-alive ping error: {e}")
+        time.sleep(480)  # Every 8 minutes (< 15 min Render spin-down limit)
 
 
 
