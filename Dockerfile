@@ -12,8 +12,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY . .
 
-# Default Koyeb web service port
-EXPOSE 8000
+# Default Render / Cloud web service port
+ENV PORT=10000
+EXPOSE 10000
 
 # Start bot
 CMD ["python", "bot.py"]

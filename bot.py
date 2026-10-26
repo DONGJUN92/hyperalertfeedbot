@@ -59,29 +59,70 @@ START_TIME = time.time()
 
 
 class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
-    """Minimal HTTP handler to satisfy Koyeb Web Service health checks."""
-    def do_GET(self):
+    """Multi-method HTTP handler to satisfy Render / Koyeb Web Service port scans and health checks."""
+    timeout = 5
+
+    def _send_health_headers(self, body_len: int):
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(body_len))
+        self.send_header("Connection", "close")
         self.end_headers()
+
+    def do_GET(self):
         response = {
             "status": "healthy",
             "service": "alpha-intelligence-telegram-bot",
             "uptime_seconds": int(time.time() - START_TIME),
         }
-        self.wfile.write(json.dumps(response).encode("utf-8"))
+        body = json.dumps(response).encode("utf-8")
+        self._send_health_headers(len(body))
+        self.wfile.write(body)
+
+    def do_HEAD(self):
+        response = {
+            "status": "healthy",
+            "service": "alpha-intelligence-telegram-bot",
+            "uptime_seconds": int(time.time() - START_TIME),
+        }
+        body = json.dumps(response).encode("utf-8")
+        self._send_health_headers(len(body))
 
     def log_message(self, format, *args):
         return
 
 
+class ReusableThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+_STARTED_HEALTH_PORTS = set()
+
+
 def run_health_server(port: int):
+    if port in _STARTED_HEALTH_PORTS:
+        return
+    _STARTED_HEALTH_PORTS.add(port)
     try:
-        with socketserver.TCPServer(("", port), HealthCheckHandler) as httpd:
-            logger.info(f"Health check HTTP server listening on port {port}...")
+        with ReusableThreadingHTTPServer(("0.0.0.0", port), HealthCheckHandler) as httpd:
+            logger.info(f"Health check HTTP server listening on 0.0.0.0:{port}...")
             httpd.serve_forever()
     except Exception as e:
         logger.error(f"Health check server error on port {port}: {e}")
+
+
+def start_all_health_servers():
+    """Bind primary PORT (default 10000 on Render) and fallback port (8000/10000) immediately."""
+    primary_port = int(os.environ.get("PORT", 10000))
+    ports_to_bind = [primary_port]
+    for fallback_port in (10000, 8000):
+        if fallback_port not in ports_to_bind:
+            ports_to_bind.append(fallback_port)
+
+    for p in ports_to_bind:
+        t = threading.Thread(target=run_health_server, args=(p,), daemon=True)
+        t.start()
 
 
 def run_keep_alive_ping():
@@ -302,9 +343,7 @@ class TwitterTelegramBot:
     def start(self):
         logger.info("Starting Alpha Intelligence Feed Bot...")
 
-        port = int(os.environ.get("PORT", 8000))
-        health_thread = threading.Thread(target=run_health_server, args=(port,), daemon=True)
-        health_thread.start()
+        start_all_health_servers()
 
         keep_alive_thread = threading.Thread(target=run_keep_alive_ping, daemon=True)
         keep_alive_thread.start()
@@ -1101,5 +1140,6 @@ class TwitterTelegramBot:
 
 
 if __name__ == "__main__":
+    start_all_health_servers()
     bot = TwitterTelegramBot()
     bot.start()
