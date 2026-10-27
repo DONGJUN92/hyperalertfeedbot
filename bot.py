@@ -158,6 +158,7 @@ class ConfigManager:
                     "priority_keywords": ["reset", "상법", "자본시장", "반독점", "tariff", "sec", "openai", "gpt"],
                     "check_interval_seconds": 30,
                     "enable_news_feed": True,
+                    "quiet_hours_enabled": True,
                     "news_check_interval_seconds": 300,
                     "ntfy_topic": "",
                     "openrouter_api_key": "",
@@ -336,6 +337,7 @@ class TwitterTelegramBot:
             ntfy_topic=self.config_mgr.get("ntfy_topic", ""),
             summarizer=self.summarizer,
             preference_engine=self.preference_engine,
+            quiet_mode=self.config_mgr.get("quiet_hours_enabled", True),
         )
         self.running = True
         self.last_update_id = 0
@@ -428,7 +430,8 @@ class TwitterTelegramBot:
         while self.running:
             try:
                 if self.config_mgr.get("enable_news_feed", True):
-                    news_items = fetch_all_curated_news()
+                    extra_queries = self.preference_engine.get_top_preferred_keywords(limit=3)
+                    news_items = fetch_all_curated_news(extra_queries=extra_queries)
                     keywords = [k.lower() for k in self.config_mgr.get("priority_keywords", [])]
 
                     for item in news_items:
@@ -607,9 +610,18 @@ class TwitterTelegramBot:
             self.answer_callback_query(cb_id, text="접근 권한이 없는 사용자입니다.", show_alert=True)
             return
 
+        # Extract message text for stateless fallback if container restarted or cache expired
+        raw_msg_text = (msg.get("text") or msg.get("caption") or "").strip()
+        first_line = raw_msg_text.splitlines()[0].strip() if raw_msg_text else ""
+
         if cb_data.startswith("fb:l:"):
             content_id = cb_data[5:]
-            ok, text = self.preference_engine.record_feedback(content_id, "like")
+            ok, text = self.preference_engine.record_feedback(
+                content_id,
+                "like",
+                fallback_text=raw_msg_text,
+                fallback_title=first_line,
+            )
             self.answer_callback_query(cb_id, text=text, show_alert=False)
             if ok and msg_id:
                 new_kb = build_feedback_updated_keyboard(content_id, "like")
@@ -617,7 +629,12 @@ class TwitterTelegramBot:
 
         elif cb_data.startswith("fb:d:"):
             content_id = cb_data[5:]
-            ok, text = self.preference_engine.record_feedback(content_id, "dislike")
+            ok, text = self.preference_engine.record_feedback(
+                content_id,
+                "dislike",
+                fallback_text=raw_msg_text,
+                fallback_title=first_line,
+            )
             self.answer_callback_query(cb_id, text=text, show_alert=False)
             if ok and msg_id:
                 new_kb = build_feedback_updated_keyboard(content_id, "dislike")
@@ -721,9 +738,11 @@ class TwitterTelegramBot:
                 "• <code>/status</code> : 봇 작동 상태 및 Uptime 확인\n"
                 "• <code>/test</code> 또는 <code>/check</code> : 모든 소스에서 최신 원문 1건씩 즉시 실시간 수신 점검\n\n"
                 "🎯 <b>AI 딥러닝 취향 학습 & 필터링 (메시지 버튼 연동)</b>\n"
-                "• 수신된 메시지 하단의 <code>[ 👍 유용함 ]</code> 클릭 시 관련 분야 맞춤 추천 증폭\n"
+                "• 수신된 메시지 하단의 <code>[ 👍 유용함 ]</code> 클릭 시 관련 분야 맞춤 추천 & 자동 확장 수집\n"
                 "• 수신된 메시지 하단의 <code>[ 👎 관심없음 ]</code> 클릭 시 관련 분야 자동 필터링 차단\n"
                 "• 실수 터치 시 <code>[ ↩️ 취소 ]</code> 버튼으로 즉시 피드백 철회 가능\n"
+                "• <code>/pref_backup</code> : 학습된 취향 데이터 백업 코드 생성\n"
+                "• <code>/pref_restore &lt;코드&gt;</code> : 백업 코드로 취향 데이터 즉시 복원\n"
                 "• <code>/pref_reset</code> : 취향 학습 데이터 초기화 (다시 시작)\n\n"
                 "🔗 <b>X(트위터) 연결 링크 관리</b>\n"
                 "• <code>/add_link &lt;URL|아이디&gt;</code> : X 링크/계정 추가 (채팅창에 URL 바로 전송해도 자동 등록!)\n"
@@ -737,13 +756,25 @@ class TwitterTelegramBot:
                 "🎯 <b>키워드 관리 (긴급 핀/사이렌 알림)</b>\n"
                 "• <code>/add_keyword &lt;단어&gt;</code> : 긴급 키워드 추가 (예: <code>/add_keyword 상법</code>)\n"
                 "• <code>/del_keyword &lt;단어&gt;</code> : 긴급 키워드 제거\n\n"
-                "📰 <b>1차 소스 뉴스 피드</b>\n"
-                "• <code>/news_toggle</code> : AI 논문 및 경제 정책 뉴스 피드 ON/OFF\n\n"
+                "📰 <b>1차 소스 뉴스 피드 & 야간 무음</b>\n"
+                "• <code>/news_toggle</code> : AI 논문 및 경제 정책 뉴스 피드 ON/OFF\n"
+                "• <code>/quiet_toggle</code> : 심야(23:00~07:00) 일반 알림 스마트 무음 모드 ON/OFF\n\n"
                 "⚙️ <b>추가 설정</b>\n"
                 "• <code>/interval &lt;초&gt;</code> : 감시 주기 변경\n"
                 "• <code>/set_ntfy &lt;토픽&gt;</code> : ntfy 방해금지 무시 사이렌 연동"
             )
             self.notifier.send_telegram_message(reply)
+
+        elif cmd == "/quiet_toggle":
+            curr = self.config_mgr.get("quiet_hours_enabled", True)
+            new_val = not curr
+            self.config_mgr.set("quiet_hours_enabled", new_val)
+            self.notifier.set_quiet_mode(new_val)
+            state_str = "활성화(ON) 🌙" if new_val else "비활성화(OFF) 🔔"
+            self.notifier.send_telegram_message(
+                f"🌙 <b>심야 스마트 무음 모드(KST 23:00~07:00)가 {state_str} 되었습니다.</b>\n"
+                "• 긴급 키워드(<code>[URGENT]</code>)와 <code>⭐️ 맞춤 추천</code> 소식은 언제나 즉시 알림이 울리며, 심야 일반 중립 소식만 무음으로 조용히 수신됩니다."
+            )
 
         elif cmd == "/celebs":
             reply = (
@@ -1084,16 +1115,23 @@ class TwitterTelegramBot:
 
         elif cmd in ["/pref", "/feedback", "/preferences"]:
             stats = self.preference_engine.get_stats()
-            ready_str = "가동 중 🟢 (다국어 INT8 트랜스포머)" if stats["model_ready"] else "초기화 중 ⚪ (잠시 후 완료)"
+            ready_str = "가동 중 🟢 (IDF 서브워드 + 한·영 교차 시맨틱 v2)" if stats["model_ready"] else "초기화 중 ⚪"
             likes_n = stats["like_count"]
             dislikes_n = stats["dislike_count"]
+            expanded_kws = stats.get("expanded_keywords", [])
+            quiet_str = "ON 🌙 (23:00~07:00 중립 무음)" if self.config_mgr.get("quiet_hours_enabled", True) else "OFF 🔔"
 
             lines = [
-                "🎯 <b>AI 딥러닝 취향 학습 & 맞춤 추천 현황</b>\n",
-                f"• <b>딥러닝 임베딩 엔진:</b> {ready_str}",
+                "🎯 <b>AI 시맨틱 취향 학습 & 맞춤 추천 현황 (v2)</b>\n",
+                f"• <b>시맨틱 벡터 엔진:</b> {ready_str}",
                 f"• <b>👍 학습된 선호 소식:</b> {likes_n}건",
-                f"• <b>👎 학습된 비선호 소식:</b> {dislikes_n}건\n",
+                f"• <b>👎 학습된 비선호 소식:</b> {dislikes_n}건",
+                f"• <b>🌙 심야 스마트 무음:</b> {quiet_str}\n",
             ]
+            if expanded_kws:
+                kw_badges = ", ".join([f"<code>{html_escape(k)}</code>" for k in expanded_kws])
+                lines.append(f"📈 <b>동적 확장 수집 중인 선호 토픽:</b> {kw_badges}\n")
+
             if stats["recent_likes"]:
                 lines.append("⭐️ <b>최근 선호(추천) 학습 주제:</b>")
                 for t in stats["recent_likes"]:
@@ -1112,14 +1150,37 @@ class TwitterTelegramBot:
 
             lines.extend([
                 "💡 <b>피드백 방법:</b>",
-                "• 메시지 하단 <code>[ 👍 유용함 ]</code> 클릭 시 관련 분야 맞춤 추천 증폭",
+                "• 메시지 하단 <code>[ 👍 유용함 ]</code> 클릭 시 관련 분야 맞춤 추천 & 자동 확장 수집",
                 "• 메시지 하단 <code>[ 👎 관심없음 ]</code> 클릭 시 관련 분야 자동 필터링 차단",
                 "• 실수로 누른 경우 <code>[ ↩️ 취소 ]</code> 버튼으로 즉시 되돌리기 가능\n",
                 "⚙️ <b>관리 명령어:</b>",
                 "• <code>/pref_log</code> : 최근 AI 차단 상세 내역 조회",
+                "• <code>/pref_backup</code> : 취향 학습 데이터 백업 코드 발급",
+                "• <code>/pref_restore &lt;코드&gt;</code> : 백업 코드로 취향 복원",
                 "• <code>/pref_reset</code> : 취향 학습 데이터 초기화",
             ])
             self.notifier.send_telegram_message("\n".join(lines))
+
+        elif cmd in ["/pref_backup", "/backup_pref"]:
+            code = self.preference_engine.export_backup_code()
+            stats = self.preference_engine.get_stats()
+            self.notifier.send_telegram_message(
+                "💾 <b>AI 취향 학습 데이터 백업 코드</b>\n\n"
+                f"• <b>포함 내역:</b> 선호 {stats['like_count']}건 / 비선호 {stats['dislike_count']}건\n\n"
+                f"아래 명령어를 복사해 두셨다가 재배포 후 입력하시면 언제든 즉시 복원됩니다:\n"
+                f"<code>/pref_restore {code}</code>\n\n"
+                f"<i>(팁: Render 환경변수 <code>PREF_BACKUP_CODE</code>에 위 코드만 등록해 두면 재배포 시 자동 복원됩니다!)</i>"
+            )
+
+        elif cmd in ["/pref_restore", "/restore_pref"]:
+            if not arg:
+                self.notifier.send_telegram_message("사용법: <code>/pref_restore &lt;백업코드&gt;</code>")
+            else:
+                ok, res_msg = self.preference_engine.import_backup_code(arg)
+                if ok:
+                    self.notifier.send_telegram_message(f"♻️ <b>취향 데이터 복원 성공!</b>\n• {html_escape(res_msg)}")
+                else:
+                    self.notifier.send_telegram_message(f"⚠️ <b>복원 실패:</b> {html_escape(res_msg)}")
 
         elif cmd in ["/pref_reset", "/reset_pref", "/feedback_reset"]:
             self.preference_engine.reset()

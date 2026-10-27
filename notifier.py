@@ -23,12 +23,39 @@ CELEBRITY_BADGES = {
 
 
 class Notifier:
-    def __init__(self, bot_token: str, chat_id: str, ntfy_topic: str = "", summarizer=None, preference_engine=None):
+    def __init__(
+        self,
+        bot_token: str,
+        chat_id: str,
+        ntfy_topic: str = "",
+        summarizer=None,
+        preference_engine=None,
+        quiet_mode: bool = True,
+    ):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.ntfy_topic = ntfy_topic.strip() if ntfy_topic else ""
         self.summarizer = summarizer
         self.preference_engine = preference_engine
+        self.quiet_mode = quiet_mode
+
+    def set_quiet_mode(self, enabled: bool):
+        self.quiet_mode = bool(enabled)
+
+    def _should_disable_notification(self, is_emergency: bool, is_boosted: bool) -> bool:
+        """
+        Smart notification fatigue control:
+        - Emergency ([URGENT]) and Boosted (⭐️ [맞춤 추천]) alerts ALWAYS trigger sound/vibration.
+        - Routine neutral alerts are delivered silently during KST night hours (23:00 ~ 07:00) when quiet_mode is ON.
+        """
+        if is_emergency or is_boosted:
+            return False
+        if not self.quiet_mode:
+            return False
+        kst_hour = (time.gmtime().tm_hour + 9) % 24
+        if kst_hour >= 23 or kst_hour < 7:
+            return True
+        return False
 
     def update_credentials(self, bot_token: str, chat_id: str, ntfy_topic: str = "", summarizer=None, preference_engine=None):
         self.bot_token = bot_token
@@ -136,13 +163,15 @@ class Notifier:
         short_id = f"tw_{raw_tid[-8:]}" if raw_tid else f"tw_{make_short_hash(text)}"
 
         header_tag = "[URGENT]" if is_emergency else f"[{badge}]"
+        is_boosted = False
+        tweet_title = f"@{username}: {text[:50]}"
 
-        # Evaluate preference via Deep Learning model
+        # 1st Pass: Pre-evaluate on raw text to avoid unnecessary LLM call if already blocked
         if self.preference_engine:
             self.preference_engine.cache_content(
                 content_id=short_id,
                 text=text,
-                title=f"@{username}: {text[:50]}",
+                title=tweet_title,
                 category="VIP 트윗",
                 url=url,
             )
@@ -150,12 +179,11 @@ class Notifier:
                 text=text,
                 category="VIP 트윗",
                 matched_keywords=matched_keywords,
+                title=tweet_title,
             )
             if should_block:
-                logger.info(f"🚫 Tweet suppressed by AI preference model: @{username} ({reason})")
+                logger.info(f"🚫 Tweet suppressed by AI preference model (1st pass): @{username} ({reason})")
                 return None
-            if is_boosted and not is_emergency:
-                header_tag = f"⭐️ [맞춤 추천] [{badge}]"
 
         safe_author = html_escape(author)
         safe_time = html_escape(time_str)
@@ -171,6 +199,30 @@ class Notifier:
             except Exception as e:
                 logger.debug(f"AI tweet briefing error: {e}")
 
+        # 2nd Pass: Cross-lingual (EN original + KO briefing) caching & re-evaluation
+        if self.preference_engine and ai_briefing:
+            bilingual_text = f"{text}\n{ai_briefing}"
+            self.preference_engine.cache_content(
+                content_id=short_id,
+                text=bilingual_text,
+                title=tweet_title,
+                category="VIP 트윗",
+                url=url,
+            )
+            should_block_2, is_boosted_2, reason_2 = self.preference_engine.evaluate_content(
+                text=bilingual_text,
+                category="VIP 트윗",
+                matched_keywords=matched_keywords,
+                title=tweet_title,
+            )
+            if should_block_2:
+                logger.info(f"🚫 Tweet suppressed by AI cross-lingual model: @{username} ({reason_2})")
+                return None
+            is_boosted = is_boosted or is_boosted_2
+
+        if is_boosted and not is_emergency:
+            header_tag = f"⭐️ [맞춤 추천] [{badge}]"
+
         if ai_briefing:
             body_block = format_briefing_blockquote(ai_briefing)
             original_block = f"\n\n• <b>원문 발언:</b> <i>\"{safe_text}\"</i>"
@@ -179,6 +231,7 @@ class Notifier:
             original_block = ""
 
         reply_markup = build_feedback_keyboard(short_id)
+        silent_push = self._should_disable_notification(is_emergency, is_boosted)
 
         if is_emergency:
             kw_str = ", ".join([f"<code>{html_escape(k)}</code>" for k in matched_keywords])
@@ -210,9 +263,9 @@ class Notifier:
                 f"<blockquote>{body_block}</blockquote>{original_block}\n\n"
                 f"• <b>원문 링크:</b> <a href=\"{url}\">x.com/{username}</a>"
             )
-            self.send_telegram_message(msg, disable_notification=False, reply_markup=reply_markup)
+            self.send_telegram_message(msg, disable_notification=silent_push, reply_markup=reply_markup)
 
-            if self.ntfy_topic:
+            if self.ntfy_topic and not silent_push:
                 self.send_ntfy_push(
                     title=f"@{username}: {text[:100]}",
                     message=text[:300],
@@ -252,7 +305,9 @@ class Notifier:
         if is_emergency:
             tag = f"URGENT {tag}"
 
-        # Evaluate preference via Deep Learning model
+        is_boosted = bool(news_item.get("is_expanded_topic", False))
+
+        # 1st Pass: Pre-evaluate on raw text before LLM summarization
         if self.preference_engine:
             full_content = f"{title} {summary}"
             self.preference_engine.cache_content(
@@ -262,16 +317,16 @@ class Notifier:
                 category=category,
                 url=url,
             )
-            should_block, is_boosted, reason = self.preference_engine.evaluate_content(
+            should_block, boosted_1, reason = self.preference_engine.evaluate_content(
                 text=full_content,
                 category=category,
                 matched_keywords=matched_keywords,
+                title=title,
             )
             if should_block:
-                logger.info(f"🚫 News suppressed by AI preference model: [{category}] {title[:30]} ({reason})")
+                logger.info(f"🚫 News suppressed by AI preference model (1st pass): [{category}] {title[:30]} ({reason})")
                 return None
-            if is_boosted and not is_emergency:
-                tag = f"⭐️ 맞춤추천 | {tag}"
+            is_boosted = is_boosted or boosted_1
 
         safe_title = html_escape(title)
         safe_source = html_escape(source)
@@ -284,6 +339,30 @@ class Notifier:
                 ai_summary = self.summarizer.summarize(title, summary, category)
             except Exception as e:
                 logger.debug(f"AI summary error: {e}")
+
+        # 2nd Pass: Cross-lingual (EN original + KO summary) caching & re-evaluation
+        if self.preference_engine and ai_summary:
+            bilingual_content = f"{title} {summary} {ai_summary}"
+            self.preference_engine.cache_content(
+                content_id=short_id,
+                text=bilingual_content,
+                title=title,
+                category=category,
+                url=url,
+            )
+            should_block_2, boosted_2, reason_2 = self.preference_engine.evaluate_content(
+                text=bilingual_content,
+                category=category,
+                matched_keywords=matched_keywords,
+                title=title,
+            )
+            if should_block_2:
+                logger.info(f"🚫 News suppressed by AI cross-lingual model: [{category}] {title[:30]} ({reason_2})")
+                return None
+            is_boosted = is_boosted or boosted_2
+
+        if is_boosted and not is_emergency and not tag.startswith("⭐️"):
+            tag = f"⭐️ 맞춤추천 | {tag}"
 
         # Clean blockquote body
         if ai_summary:
@@ -312,7 +391,8 @@ class Notifier:
         )
 
         reply_markup = build_feedback_keyboard(short_id)
-        msg_id = self.send_telegram_message(msg, disable_notification=False, reply_markup=reply_markup)
+        silent_push = self._should_disable_notification(is_emergency, is_boosted)
+        msg_id = self.send_telegram_message(msg, disable_notification=silent_push, reply_markup=reply_markup)
         if is_emergency and msg_id:
             self.pin_telegram_message(msg_id)
 

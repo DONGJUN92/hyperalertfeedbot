@@ -261,17 +261,40 @@ def fetch_geeknews(limit: int = 5) -> List[Dict[str, Any]]:
 
 
 
-def fetch_all_curated_news() -> List[Dict[str, Any]]:
-    """Fetch curated items across AI, IT Tech, Economic / Commercial law policy, and GeekNews."""
+def fetch_all_curated_news(extra_queries: List[str] = None) -> List[Dict[str, Any]]:
+    """
+    Fetch curated items across AI, IT Tech, Economic / Commercial law policy, and GeekNews.
+    If extra_queries (learned from 👍 likes) are provided, dynamically expands search coverage.
+    """
     all_items = []
-    # 1. Economic / Commercial Law (상법) & Antitrust (공정거래)
-    all_items.extend(fetch_korea_policy_news(["상법 개정", "자본시장법 금융위", "공정거래위원회 기업결합", "공정거래법 개정"]))
-    # 2. GeekNews (https://news.hada.io/) - notify on every new post
-    all_items.extend(fetch_geeknews(limit=5))
-    # 3. ArXiv AI
-    all_items.extend(fetch_arxiv_ai_papers(limit=3))
-    # 4. TechCrunch AI
-    all_items.extend(fetch_techcrunch_ai_news(limit=3))
+    seen_ids = set()
+
+    def _add_unique(items: List[Dict[str, Any]], is_expanded: bool = False):
+        for it in items:
+            iid = it.get("id")
+            if iid and iid not in seen_ids:
+                seen_ids.add(iid)
+                if is_expanded:
+                    it["is_expanded_topic"] = True
+                all_items.append(it)
+
+    # 1. Dynamic Topic Expansion (User's liked topics fetched with priority)
+    if extra_queries:
+        clean_extra = [q.strip() for q in extra_queries if q and len(q.strip()) >= 2][:3]
+        if clean_extra:
+            expanded_items = fetch_korea_policy_news(clean_extra, limit_per_query=2)
+            for item in expanded_items:
+                item["category"] = "⭐️ 맞춤 확장 토픽"
+            _add_unique(expanded_items, is_expanded=True)
+
+    # 2. Economic / Commercial Law (상법) & Antitrust (공정거래)
+    _add_unique(fetch_korea_policy_news(["상법 개정", "자본시장법 금융위", "공정거래위원회 기업결합", "공정거래법 개정"]))
+    # 3. GeekNews (https://news.hada.io/) - notify on every new post
+    _add_unique(fetch_geeknews(limit=5))
+    # 4. ArXiv AI
+    _add_unique(fetch_arxiv_ai_papers(limit=3))
+    # 5. TechCrunch AI
+    _add_unique(fetch_techcrunch_ai_news(limit=3))
     return all_items
 
 
